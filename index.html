@@ -58,10 +58,12 @@
 
   /* 猫咪面板 */
   .cat-panel {
-    width: 280px; flex-shrink: 0; background: var(--panel); border: 2px solid var(--panel-2);
+    width: 300px; flex-shrink: 0; background: var(--panel); border: 2px solid var(--panel-2);
     border-radius: 22px; padding: 18px; text-align: center;
     box-shadow: 0 6px 18px rgba(214,180,140,.25); position: sticky; top: 16px;
   }
+  .cat-panel canvas { margin: 6px auto; }
+  .cat-panel .hint { margin-top: 10px; }
   .cat-panel h3 { color: #d99a00; font-size: 17px; margin-bottom: 6px; }
   .cat-name { font-size: 15px; font-weight: bold; color: var(--accent); margin: 4px 0 10px; }
   .stat-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
@@ -76,8 +78,8 @@
     margin: 8px 0; text-align: center;
   }
   .cat-input:focus { outline: 2px solid var(--accent-2); }
-  .pet-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0 4px; }
-  .pet-picker .btn { padding: 8px 2px; font-size: 12px; border-radius: 10px; }
+  .pet-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 10px; }
+  .pet-picker .btn { padding: 9px 2px; font-size: 13px; border-radius: 12px; }
   .pet-picker .btn.sel { outline: 2px solid var(--accent); background: rgba(245,184,30,.14); }
 
   .topbar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
@@ -387,7 +389,7 @@ function buildCatPanel() {
     nameIn.maxLength = 8;
     panel.appendChild(nameIn);
     const adoptBtn = el("button", "btn primary", "确认领养");
-    adoptBtn.style.width = "90%";
+    adoptBtn.style.width = "100%"; adoptBtn.style.marginTop = "4px";
     adoptBtn.onclick = () => {
       const name = nameIn.value.trim() || selType.defaultName;
       saveCat({ name, species: selType.id, hunger: 90, mood: 90, clean: 90, lastTs: Date.now() });
@@ -759,6 +761,7 @@ function wheelView(root) {
 function dinoView(root) {
   root.appendChild(backBar("🦖 恐龙跑酷"));
   const cv = makeCanvas(920, 320);
+  cv.style.margin = "0 auto";
   const wrap = el("div"); wrap.style.textAlign = "center"; wrap.appendChild(cv);
   root.appendChild(wrap);
   root.appendChild(el("div", "hint", "空格 / 点击跳跃 · 最高纪录自动保存 · ESC 返回"));
@@ -912,6 +915,7 @@ function gomokuView(root) {
   root.appendChild(backBar("⚫ 五子棋"));
   const N = 15, CELL = 40, PAD = 24, SIZE = PAD * 2 + CELL * (N - 1);
   const cv = makeCanvas(SIZE, SIZE);
+  cv.style.margin = "0 auto";
   const wrap = el("div"); wrap.style.textAlign = "center"; wrap.appendChild(cv);
   root.appendChild(wrap);
   const status = el("div", "hint", "你的回合（黑棋）· 点击交叉点落子 · ESC 返回");
