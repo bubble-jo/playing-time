@@ -258,14 +258,14 @@ function cloudPushProgress() {
   const p = getProgress();
   sb.from("progress").upsert({
     user_id: currentUser.id,
-    snake: p.snake || 1, match: p.match || 1, sudoku: p.sudoku || 1, huarong: p.huarong || 1,
+    snake: p.snake || 1, match: p.match || 1, sudoku: p.sudoku || 1, huarong: p.huarong || 1, digit: p.digit || 1,
     updated_at: new Date().toISOString()
   }, { onConflict: "user_id" });
 }
 async function cloudPullProgress() {
   if (!sb || !currentUser) return;
   const { data } = await sb.from("progress").select("*").eq("user_id", currentUser.id).maybeSingle();
-  if (data) setProgress({ snake: data.snake, match: data.match, sudoku: data.sudoku, huarong: data.huarong });
+  if (data) setProgress({ snake: data.snake, match: data.match, sudoku: data.sudoku, huarong: data.huarong, digit: data.digit });
 }
 function cloudPushPet() {
   if (!sb || !currentUser) return;
@@ -1632,58 +1632,90 @@ function huarongView(root) {
   root.appendChild(stage);
   root.appendChild(el("div", "hint", "ESC 返回主菜单"));
 
-  // ---- 数字华容道：4x4 15puzzle ----
-  let digGrid = [], digMoves = 0;
+  // ---- 数字华容道：多关卡（4x4 → 5x5 → 6x6 → 7x7）----
+  const DIGIT_LEVELS = [
+    { size: 4, name: "4×4 入门" },
+    { size: 5, name: "5×5 进阶" },
+    { size: 6, name: "6×6 挑战" },
+    { size: 7, name: "7×7 大师" },
+  ];
+  let digGrid = [], digN = 4, digLv = 0, digMoves = 0;
   function shuffleDigit() {
-    digGrid = Array.from({ length: 16 }, (_, i) => (i + 1) % 16); // 1..15,0
-    // 随机做大量合法移动保证可解
-    let blank = 15;
-    const shuffleSteps = 80;
+    const n = digN;
+    digGrid = Array.from({ length: n * n }, (_, i) => (i + 1) % (n * n));
+    let blank = n * n - 1;
+    const shuffleSteps = n * n * 4;
     for (let s = 0; s < shuffleSteps; s++) {
-      const br = Math.floor(blank / 4), bc = blank % 4;
+      const br = Math.floor(blank / n), bc = blank % n;
       const opts = [];
-      if (br > 0) opts.push(blank - 4);
-      if (br < 3) opts.push(blank + 4);
+      if (br > 0) opts.push(blank - n);
+      if (br < n - 1) opts.push(blank + n);
       if (bc > 0) opts.push(blank - 1);
-      if (bc < 3) opts.push(blank + 1);
+      if (bc < n - 1) opts.push(blank + 1);
       const t = opts[rndi(0, opts.length - 1)];
       digGrid[blank] = digGrid[t]; digGrid[t] = 0; blank = t;
     }
-    if (digitWin()) { digGrid = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,15]; blank = 14; }
+    if (digitWin()) { digGrid[n * n - 2] = 0; digGrid[n * n - 1] = n * n - 1; }
     digMoves = 0;
   }
   function digitWin() {
-    for (let i = 0; i < 15; i++) if (digGrid[i] !== i + 1) return false;
-    return digGrid[15] === 0;
+    const n = digN, total = n * n;
+    for (let i = 0; i < total - 1; i++) if (digGrid[i] !== i + 1) return false;
+    return digGrid[total - 1] === 0;
   }
   function digitMove(idx) {
+    const n = digN;
     const blank = digGrid.indexOf(0);
-    const br = Math.floor(blank / 4), bc = blank % 4;
-    const ir = Math.floor(idx / 4), ic = idx % 4;
+    const br = Math.floor(blank / n), bc = blank % n;
+    const ir = Math.floor(idx / n), ic = idx % n;
     if ((Math.abs(br - ir) === 1 && bc === ic) || (Math.abs(bc - ic) === 1 && br === ir)) {
       digGrid[blank] = digGrid[idx]; digGrid[idx] = 0;
       digMoves++; SFX.place(); drawDigit();
       if (digitWin()) {
         SFX.win();
-        showModal("🎉 搞定！", [`用了 ${digMoves} 步完成 4×4 数字华容道`],
-          [{ label: "再来一局", primary: true, onClick: () => { shuffleDigit(); drawDigit(); } },
-           { label: "返回主菜单", onClick: () => show(menuView) }]);
+        saveLevel("digit", Math.min(DIGIT_LEVELS.length, digLv + 2));
+        const last = digLv + 1 >= DIGIT_LEVELS.length;
+        showModal(last ? "🏆 全部通关！" : "🎉 过关！",
+          [`用了 ${digMoves} 步完成 ${DIGIT_LEVELS[digLv].name}`],
+          last ? [{ label: "重新挑战", primary: true, onClick: () => startDigit(0) },
+                  { label: "返回主菜单", onClick: () => show(menuView) }]
+               : [{ label: "下一关 " + DIGIT_LEVELS[digLv + 1].name, primary: true, onClick: () => startDigit(digLv + 1) },
+                  { label: "返回主菜单", onClick: () => show(menuView) }]);
       }
     }
   }
   function drawDigit() {
+    const n = digN;
     ctx.clearRect(0, 0, COLS * CELL, ROWS * CELL);
     ctx.fillStyle = "#f4e9d8"; ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
-    for (let i = 0; i < 16; i++) {
-      const r = Math.floor(i / 4), c = i % 4;
+    for (let i = 0; i < n * n; i++) {
+      const r = Math.floor(i / n), c = i % n;
       const x = c * CELL + 4, y = r * CELL + 4, w = CELL - 8, h = CELL - 8;
       if (digGrid[i] === 0) continue;
       ctx.fillStyle = "#8ecfff";
       ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
       ctx.fillStyle = "#1d4e79";
-      ctx.font = "bold 30px Microsoft YaHei"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const fs = Math.max(12, Math.floor(CELL * 0.32));
+      ctx.font = `bold ${fs}px Microsoft YaHei`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(digGrid[i], x + w / 2, y + h / 2);
     }
+  }
+  function startDigit(i) {
+    digLv = i; digN = DIGIT_LEVELS[i].size;
+    COLS = digN; ROWS = digN;
+    if (cv) cv.remove();
+    cv = makeCanvas(COLS * CELL, ROWS * CELL);
+    cv.style.margin = "0 auto";
+    stage.insertBefore(cv, side);
+    ctx = cv.getContext("2d");
+    cv.onclick = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const c = Math.floor((e.clientX - rect.left) / CELL);
+      const r = Math.floor((e.clientY - rect.top) / CELL);
+      digitMove(r * digN + c);
+      updSide();
+    };
+    shuffleDigit(); drawDigit(); updSide();
   }
 
   // ---- 三国华容道 ----
@@ -1699,7 +1731,7 @@ function huarongView(root) {
       lvEl.textContent = `第 ${lv + 1} / ${HRD_LEVELS.length} 关 · ${HRD_LEVELS[lv].name}`;
       moveEl.textContent = `步数: ${moves}`;
     } else {
-      lvEl.textContent = "4×4 数字华容道";
+      lvEl.textContent = `数字华容道 第 ${digLv + 1} / ${DIGIT_LEVELS.length} 关 · ${DIGIT_LEVELS[digLv].name}`;
       moveEl.textContent = `步数: ${digMoves}`;
     }
   }
@@ -1782,7 +1814,7 @@ function huarongView(root) {
           sel = pieces.find(p => r >= p.r && r < p.r + p.h && c >= p.c && c < p.c + p.w) || null;
           SFX.click(); drawSanguo();
         };
-    if (m === "digit") { shuffleDigit(); drawDigit(); } else { startLevel(getLevel("huarong", HRD_LEVELS.length) - 1); }
+    if (m === "digit") { startDigit(getLevel("digit", DIGIT_LEVELS.length) - 1); } else { startLevel(getLevel("huarong", HRD_LEVELS.length) - 1); }
     updSide();
   }
 
@@ -1804,7 +1836,6 @@ function huarongView(root) {
   setMode("sanguo");
   return () => window.removeEventListener("keydown", keyH);
 }
-
 /* ================================================================
    8. 宝石消消乐（20 关目标分）
    ================================================================ */
