@@ -64,6 +64,14 @@
   }
   .cat-panel canvas { margin: 6px auto; }
   .cat-panel .hint { margin-top: 10px; }
+  .toys-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; min-height: 28px; }
+  .toys-row .toy-btn { padding: 6px 10px; font-size: 18px; border-radius: 12px; }
+  .theme-row { display: flex; align-items: center; gap: 6px; justify-content: center; margin-top: 14px; }
+  .theme-label { font-size: 12px; color: var(--text-dim); }
+  .swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--panel-2); cursor: pointer; padding: 0; }
+  .swatch.on { border-color: var(--accent); transform: scale(1.2); }
+  .heart-float { position: absolute; font-size: 20px; pointer-events: none; animation: heartUp 1.1s ease-out forwards; }
+  @keyframes heartUp { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-60px); opacity: 0; } }
   .cat-panel h3 { color: #d99a00; font-size: 17px; margin-bottom: 6px; }
   .cat-name { font-size: 15px; font-weight: bold; color: var(--accent); margin: 4px 0 10px; }
   .stat-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
@@ -232,6 +240,69 @@ document.getElementById("sound-btn").onclick = function () {
 };
 if (!soundOn) document.getElementById("sound-btn").textContent = "🔇 音效关";
 window.addEventListener("pointerdown", () => ac(), { once: true });
+
+/* ================================================================
+   主题系统（多颜色主题，可切换并记住）
+   ================================================================ */
+const THEMES = [
+  { id: "yellow", name: "黄蓝",   bg: "#fdf8ec", panel: "#fffdf6", panel2: "#f3ecd8", accent: "#f5b81e", accent2: "#5ea9e9", text: "#54493a", dim: "#a69877", swatch: "#f5b81e" },
+  { id: "pink",   name: "蜜桃粉", bg: "#fdf3e7", panel: "#fffaf2", panel2: "#f3e6d3", accent: "#ff9eaa", accent2: "#8adab2", text: "#5a4a42", dim: "#a39084", swatch: "#ff9eaa" },
+  { id: "mint",   name: "薄荷绿", bg: "#eef7f0", panel: "#f7fdf8", panel2: "#dcefe0", accent: "#5fc0a0", accent2: "#f0b86e", text: "#3a4a42", dim: "#8aa596", swatch: "#5fc0a0" },
+  { id: "purple", name: "紫芋",   bg: "#f6f1fb", panel: "#fdfbff", panel2: "#ebe0f5", accent: "#a98ee6", accent2: "#5ec9c9", text: "#4a3f5a", dim: "#9a8eb0", swatch: "#a98ee6" },
+  { id: "blue",   name: "海蓝",   bg: "#eef4fb", panel: "#f7fbff", panel2: "#dae8f5", accent: "#4a90d9", accent2: "#f0a05e", text: "#33465a", dim: "#8699ad", swatch: "#4a90d9" },
+  { id: "peach",  name: "奶油桃", bg: "#fff1e6", panel: "#fff8f1", panel2: "#f5e0cc", accent: "#f08a5d", accent2: "#6fc0b0", text: "#5a4030", dim: "#b39680", swatch: "#f08a5d" },
+];
+function applyTheme(id) {
+  const t = THEMES.find(x => x.id === id) || THEMES[0];
+  const r = document.documentElement.style;
+  r.setProperty("--bg", t.bg); r.setProperty("--panel", t.panel); r.setProperty("--panel-2", t.panel2);
+  r.setProperty("--accent", t.accent); r.setProperty("--accent-2", t.accent2);
+  r.setProperty("--text", t.text); r.setProperty("--text-dim", t.dim);
+  localStorage.setItem("pt_theme", id);
+}
+applyTheme(localStorage.getItem("pt_theme") || "yellow");
+
+/* ================================================================
+   进度存档（每个游戏当前关卡）+ 宠物玩具解锁
+   ================================================================ */
+function getProgress() {
+  try { return JSON.parse(localStorage.getItem("pt_progress")) || {}; } catch (e) { return {}; }
+}
+function setProgress(patch) {
+  const p = getProgress();
+  Object.assign(p, patch);
+  localStorage.setItem("pt_progress", JSON.stringify(p));
+}
+function getLevel(gameId, max) {
+  const v = getProgress()[gameId] || 1;
+  return Math.max(1, Math.min(max, v));
+}
+function saveLevel(gameId, level) { setProgress({ [gameId]: level }); }
+
+// 玩具解锁条件：{toyId, emoji, name, need: {gameId: level}}
+const TOYS = [
+  { id: "ball",   emoji: "🧶", name: "毛线球",   need: { snake: 5 } },
+  { id: "fish",   emoji: "🐟", name: "小鱼干",   need: { match: 10 } },
+  { id: "feather",emoji: "🪶", name: "逗猫棒",   need: { sudoku: 5 } },
+  { id: "treat",  emoji: "🍪", name: "小饼干",   need: { huarong: 3 } },
+  { id: "ball2",  emoji: "⚽", name: "小皮球",   need: { snake: 15 } },
+  { id: "cake",   emoji: "🎂", name: "小蛋糕",   need: { match: 20 } },
+];
+function getUnlockedToys() {
+  try { return JSON.parse(localStorage.getItem("pt_toys")) || []; } catch (e) { return []; }
+}
+function checkToyUnlocks() {
+  const prog = getProgress();
+  const owned = getUnlockedToys();
+  const newly = [];
+  for (const toy of TOYS) {
+    if (owned.includes(toy.id)) continue;
+    const [g, lv] = Object.entries(toy.need)[0];
+    if ((prog[g] || 1) >= lv) { owned.push(toy.id); newly.push(toy); }
+  }
+  if (newly.length) localStorage.setItem("pt_toys", JSON.stringify(owned));
+  return newly;
+}
 
 /* ================================================================
    框架
@@ -428,17 +499,57 @@ function buildCatPanel() {
   updBars();
 
   const btns = el("div", "cat-btns");
-  const acts = [["🍖 喂食", "hunger"], ["🧶 玩耍", "mood"], ["🛁 洗澡", "clean"]];
+  const acts = [["🍖 喂食", "hunger"], ["🧶 玩耍", "mood"], ["🛁 洗澡", "clean"], ["🤚 摸摸", "pet"]];
   acts.forEach(([label, key]) => {
-    const b = el("button", "btn mint", label);
+    const b = el("button", key === "pet" ? "btn mint" : "btn mint", label);
     b.onclick = () => {
-      cat[key] = Math.min(100, cat[key] + 18);
+      if (key === "pet") { cat.mood = Math.min(100, cat.mood + 8); floatHeart(panel); }
+      else cat[key] = Math.min(100, cat[key] + 18);
       cat.lastTs = Date.now();
       saveCat(cat); updBars(); petSound(cat);
     };
     btns.appendChild(b);
   });
   panel.appendChild(btns);
+
+  // 玩具栏（闯关解锁）
+  const toysDiv = el("div", "toys-row");
+  const owned = getUnlockedToys();
+  if (owned.length === 0) {
+    toysDiv.appendChild(el("div", "hint", "🎁 玩游戏解锁玩具：贪吃蛇5关→毛线球 等"));
+  } else {
+    owned.forEach(tid => {
+      const toy = TOYS.find(t => t.id === tid);
+      if (!toy) return;
+      const b = el("button", "btn toy-btn", toy.emoji);
+      b.title = toy.name + " · 给它玩";
+      b.onclick = () => {
+        cat.mood = Math.min(100, cat.mood + 15);
+        cat.lastTs = Date.now();
+        saveCat(cat); updBars(); floatHeart(panel); SFX.win();
+      };
+      toysDiv.appendChild(b);
+    });
+  }
+  panel.appendChild(toysDiv);
+
+  // 主题颜色选择
+  const themeDiv = el("div", "theme-row");
+  themeDiv.appendChild(el("div", "theme-label", "🎨 主题"));
+  THEMES.forEach(t => {
+    const s = el("button", "swatch");
+    s.style.background = t.swatch; s.title = t.name;
+    if ((localStorage.getItem("pt_theme") || "yellow") === t.id) s.classList.add("on");
+    s.onclick = () => {
+      applyTheme(t.id);
+      [...themeDiv.children].forEach(c => c.classList.remove("on"));
+      s.classList.add("on");
+      SFX.click();
+    };
+    themeDiv.appendChild(s);
+  });
+  panel.appendChild(themeDiv);
+
   panel.appendChild(el("div", "hint", "状态会慢慢下降，记得常来看看它"));
 
   // 定时衰减 + 存档
@@ -452,6 +563,17 @@ function buildCatPanel() {
 
   drawCatLoop(cv, () => cat);
   return panel;
+}
+
+function floatHeart(parent) {
+  const h = document.createElement("div");
+  h.className = "heart-float"; h.textContent = "💖";
+  const rect = parent.getBoundingClientRect();
+  h.style.left = (rect.width / 2 - 12) + "px";
+  h.style.top = "40px";
+  parent.style.position = "relative";
+  parent.appendChild(h);
+  setTimeout(() => h.remove(), 1100);
 }
 
 function drawCatLoop(cv, getCat) {
@@ -1176,9 +1298,11 @@ function snakeView(root) {
       eaten++; SFX.eat(); updSide();
       if (eaten >= goal) {
         passed = true; clearInterval(timer); SFX.win();
+        saveLevel("snake", Math.min(SNAKE_LEVELS, lv + 2));
+        const newToys = checkToyUnlocks();
         const last = lv + 1 >= SNAKE_LEVELS;
         showModal(last ? "🏆 全部通关！" : "🎉 过关！",
-          [last ? `你完成了全部 ${SNAKE_LEVELS} 关！` : `第 ${lv + 1} 关完成！`],
+          [(last ? `你完成了全部 ${SNAKE_LEVELS} 关！` : `第 ${lv + 1} 关完成！`) + (newToys.length ? "\n🎁 解锁新玩具：" + newToys.map(t => t.emoji + t.name).join("、") : "")],
           last ? [{ label: "重新游玩", primary: true, onClick: () => startLevel(0) },
                   { label: "返回主菜单", onClick: () => show(menuView) }]
                : [{ label: "下一关", primary: true, onClick: () => startLevel(lv + 1) },
@@ -1230,7 +1354,7 @@ function snakeView(root) {
   };
   window.addEventListener("keydown", keyH);
   againBtn.onclick = () => { SFX.click(); startLevel(lv); };
-  startLevel(0);
+  startLevel(getLevel("snake", SNAKE_LEVELS) - 1);
   return () => { clearInterval(timer); window.removeEventListener("keydown", keyH); };
 }
 
@@ -1260,29 +1384,58 @@ const HRD_LEVELS = [
     { n: "兵", r: 4, c: 0, w: 1, h: 1, color: "#d3b3f7" },
     { n: "兵", r: 4, c: 3, w: 1, h: 1, color: "#d3b3f7" },
   ]},
-  { name: "兵临城下", pieces: [
+  { name: "齐头并进", pieces: [
+    { n: "曹操", r: 0, c: 1, w: 2, h: 2, color: "#f5b81e" },
+    { n: "张飞", r: 0, c: 0, w: 1, h: 2, color: "#8ecfff" },
+    { n: "赵云", r: 0, c: 3, w: 1, h: 2, color: "#8adab2" },
+    { n: "关羽", r: 2, c: 1, w: 2, h: 1, color: "#ffd97a" },
+    { n: "黄忠", r: 2, c: 0, w: 1, h: 2, color: "#ffb59e" },
+    { n: "马超", r: 2, c: 3, w: 1, h: 2, color: "#a8c8f0" },
+    { n: "兵", r: 4, c: 1, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 4, c: 2, w: 1, h: 1, color: "#d3b3f7" },
+  ]},
+  { name: "指挥若定", pieces: [
+    { n: "曹操", r: 0, c: 1, w: 2, h: 2, color: "#f5b81e" },
+    { n: "张飞", r: 0, c: 0, w: 1, h: 2, color: "#8ecfff" },
+    { n: "赵云", r: 0, c: 3, w: 1, h: 2, color: "#8adab2" },
+    { n: "关羽", r: 2, c: 1, w: 2, h: 1, color: "#ffd97a" },
+    { n: "兵", r: 2, c: 0, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 2, c: 3, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "黄忠", r: 3, c: 0, w: 1, h: 2, color: "#ffb59e" },
+    { n: "马超", r: 3, c: 3, w: 1, h: 2, color: "#a8c8f0" },
+    { n: "兵", r: 3, c: 1, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 3, c: 2, w: 1, h: 1, color: "#d3b3f7" },
+  ]},
+  { name: "将拥曹营", pieces: [
     { n: "曹操", r: 0, c: 1, w: 2, h: 2, color: "#f5b81e" },
     { n: "张飞", r: 0, c: 0, w: 1, h: 2, color: "#8ecfff" },
     { n: "赵云", r: 0, c: 3, w: 1, h: 2, color: "#8adab2" },
     { n: "黄忠", r: 2, c: 0, w: 1, h: 2, color: "#ffb59e" },
     { n: "马超", r: 2, c: 3, w: 1, h: 2, color: "#a8c8f0" },
-    { n: "关羽", r: 4, c: 1, w: 2, h: 1, color: "#ffd97a" },
-    { n: "兵", r: 2, c: 1, w: 1, h: 1, color: "#d3b3f7" },
-    { n: "兵", r: 2, c: 2, w: 1, h: 1, color: "#d3b3f7" },
-    { n: "兵", r: 3, c: 1, w: 1, h: 1, color: "#d3b3f7" },
-    { n: "兵", r: 3, c: 2, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "关羽", r: 2, c: 1, w: 2, h: 1, color: "#ffd97a" },
+    { n: "兵", r: 4, c: 0, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 4, c: 1, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 4, c: 2, w: 1, h: 1, color: "#d3b3f7" },
+    { n: "兵", r: 4, c: 3, w: 1, h: 1, color: "#d3b3f7" },
   ]},
 ];
 
 function huarongView(root) {
   root.appendChild(backBar("🧩 华容道"));
   const stage = el("div", "stage");
-  const CELL = 104, COLS = 4, ROWS = 5;
-  const cv = makeCanvas(COLS * CELL, ROWS * CELL);
-  stage.appendChild(cv);
+  const CELL = 104;
+  let mode = "sanguo"; // sanguo | digit
+  let cv, ctx, COLS, ROWS;
+
   const side = el("div", "side-panel");
   const lvEl = el("div", "row"); lvEl.style.cssText = "font-weight:bold;color:var(--accent)";
   const moveEl = el("div", "row");
+  side.appendChild(el("h3", null, "模式"));
+  const modeRow = el("div", "mode-row");
+  const sanguoBtn = el("button", "btn mint", "三国华容道");
+  const digitBtn = el("button", "btn", "4×4 数字华容道");
+  modeRow.appendChild(sanguoBtn); modeRow.appendChild(digitBtn);
+  side.appendChild(modeRow);
   side.appendChild(el("h3", null, "关卡"));
   side.appendChild(lvEl); side.appendChild(moveEl);
   side.appendChild(el("h3", null, "移动选中棋子"));
@@ -1291,24 +1444,81 @@ function huarongView(root) {
   const resetBtn = el("button", "btn primary", "重开本关"); resetBtn.style.width = "100%";
   side.appendChild(resetBtn);
   const tip = el("div", "row"); tip.style.cssText = "color:var(--text-dim);font-size:13px;line-height:1.7;margin-top:10px";
-  tip.textContent = "点击棋子选中，再用方向键移动。把「曹操」移到底部出口即过关！";
   side.appendChild(tip);
   stage.appendChild(side);
   root.appendChild(stage);
   root.appendChild(el("div", "hint", "ESC 返回主菜单"));
 
-  const ctx = cv.getContext("2d");
-  let lv = 0, pieces, sel = null, moves;
+  // ---- 数字华容道：4x4 15puzzle ----
+  let digGrid = [], digMoves = 0;
+  function shuffleDigit() {
+    digGrid = Array.from({ length: 16 }, (_, i) => (i + 1) % 16); // 1..15,0
+    // 随机做大量合法移动保证可解
+    let blank = 15;
+    const shuffleSteps = 80;
+    for (let s = 0; s < shuffleSteps; s++) {
+      const br = Math.floor(blank / 4), bc = blank % 4;
+      const opts = [];
+      if (br > 0) opts.push(blank - 4);
+      if (br < 3) opts.push(blank + 4);
+      if (bc > 0) opts.push(blank - 1);
+      if (bc < 3) opts.push(blank + 1);
+      const t = opts[rndi(0, opts.length - 1)];
+      digGrid[blank] = digGrid[t]; digGrid[t] = 0; blank = t;
+    }
+    if (digitWin()) { digGrid = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,15]; blank = 14; }
+    digMoves = 0;
+  }
+  function digitWin() {
+    for (let i = 0; i < 15; i++) if (digGrid[i] !== i + 1) return false;
+    return digGrid[15] === 0;
+  }
+  function digitMove(idx) {
+    const blank = digGrid.indexOf(0);
+    const br = Math.floor(blank / 4), bc = blank % 4;
+    const ir = Math.floor(idx / 4), ic = idx % 4;
+    if ((Math.abs(br - ir) === 1 && bc === ic) || (Math.abs(bc - ic) === 1 && br === ir)) {
+      digGrid[blank] = digGrid[idx]; digGrid[idx] = 0;
+      digMoves++; SFX.place(); drawDigit();
+      if (digitWin()) {
+        SFX.win();
+        showModal("🎉 搞定！", [`用了 ${digMoves} 步完成 4×4 数字华容道`],
+          [{ label: "再来一局", primary: true, onClick: () => { shuffleDigit(); drawDigit(); } },
+           { label: "返回主菜单", onClick: () => show(menuView) }]);
+      }
+    }
+  }
+  function drawDigit() {
+    ctx.clearRect(0, 0, COLS * CELL, ROWS * CELL);
+    ctx.fillStyle = "#f4e9d8"; ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+    for (let i = 0; i < 16; i++) {
+      const r = Math.floor(i / 4), c = i % 4;
+      const x = c * CELL + 4, y = r * CELL + 4, w = CELL - 8, h = CELL - 8;
+      if (digGrid[i] === 0) continue;
+      ctx.fillStyle = "#8ecfff";
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
+      ctx.fillStyle = "#1d4e79";
+      ctx.font = "bold 30px Microsoft YaHei"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(digGrid[i], x + w / 2, y + h / 2);
+    }
+  }
 
+  // ---- 三国华容道 ----
+  let lv = 0, pieces, sel = null, moves;
   function startLevel(i) {
     lv = i;
     pieces = HRD_LEVELS[i].pieces.map(p => ({ ...p }));
     sel = null; moves = 0;
-    updSide(); draw();
+    updSide(); drawSanguo();
   }
   function updSide() {
-    lvEl.textContent = `第 ${lv + 1} / ${HRD_LEVELS.length} 关 · ${HRD_LEVELS[lv].name}`;
-    moveEl.textContent = `步数: ${moves}`;
+    if (mode === "sanguo") {
+      lvEl.textContent = `第 ${lv + 1} / ${HRD_LEVELS.length} 关 · ${HRD_LEVELS[lv].name}`;
+      moveEl.textContent = `步数: ${moves}`;
+    } else {
+      lvEl.textContent = "4×4 数字华容道";
+      moveEl.textContent = `步数: ${digMoves}`;
+    }
   }
   function occupied(except) {
     const occ = {};
@@ -1320,16 +1530,18 @@ function huarongView(root) {
     return occ;
   }
   function tryMove(dr, dc) {
-    if (!sel) { SFX.error(); return; }
+    if (mode !== "sanguo" || !sel) { SFX.error(); return; }
     const occ = occupied(sel);
     const nr = sel.r + dr, nc = sel.c + dc;
     if (nr < 0 || nc < 0 || nr + sel.h > ROWS || nc + sel.w > COLS) { SFX.error(); return; }
     for (let r = nr; r < nr + sel.h; r++) for (let c = nc; c < nc + sel.w; c++)
       if (occ[r + "," + c]) { SFX.error(); return; }
     sel.r = nr; sel.c = nc; moves++;
-    SFX.place(); updSide(); draw();
+    SFX.place(); updSide(); drawSanguo();
     if (sel.n === "曹操" && sel.r === 3 && sel.c === 1) {
       SFX.win();
+      saveLevel("huarong", Math.min(HRD_LEVELS.length, lv + 2));
+      checkToyUnlocks();
       const last = lv + 1 >= HRD_LEVELS.length;
       showModal(last ? "🏆 全部通关！" : "🎉 过关！",
         [`「${HRD_LEVELS[lv].name}」用了 ${moves} 步` + (last ? "，恭喜通关全部关卡！" : "，曹操成功脱困！")],
@@ -1339,10 +1551,9 @@ function huarongView(root) {
                 { label: "返回主菜单", onClick: () => show(menuView) }]);
     }
   }
-  function draw() {
+  function drawSanguo() {
     ctx.clearRect(0, 0, COLS * CELL, ROWS * CELL);
     ctx.fillStyle = "#f4e9d8"; ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
-    // 出口标记
     ctx.fillStyle = "rgba(138,218,178,.45)";
     ctx.fillRect(CELL, (ROWS - 1) * CELL, CELL * 2, CELL);
     ctx.fillStyle = "#5a8a72"; ctx.font = "bold 15px Microsoft YaHei";
@@ -1352,23 +1563,46 @@ function huarongView(root) {
       const x = p.c * CELL + 4, y = p.r * CELL + 4, w = p.w * CELL - 8, h = p.h * CELL - 8;
       ctx.fillStyle = p.color;
       ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
-      if (p === sel) {
-        ctx.strokeStyle = "#5a4a42"; ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.stroke();
-      }
+      if (p === sel) { ctx.strokeStyle = "#5a4a42"; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.stroke(); }
       ctx.fillStyle = "#5a4a42";
       ctx.font = (p.w * p.h >= 4 ? "bold 26px" : (p.w === 2 || p.h === 2 ? "bold 20px" : "bold 15px")) + " Microsoft YaHei";
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(p.n, x + w / 2, y + h / 2);
     });
   }
-  cv.addEventListener("mousedown", (e) => {
-    const rect = cv.getBoundingClientRect();
-    const c = Math.floor((e.clientX - rect.left) / CELL);
-    const r = Math.floor((e.clientY - rect.top) / CELL);
-    const hit = pieces.find(p => r >= p.r && r < p.r + p.h && c >= p.c && c < p.c + p.w);
-    sel = hit || null; SFX.click(); draw();
-  });
+
+  function setMode(m) {
+    mode = m;
+    sanguoBtn.className = m === "sanguo" ? "btn mint" : "btn";
+    digitBtn.className = m === "digit" ? "btn mint" : "btn";
+    if (cv) cv.remove();
+    if (m === "sanguo") { COLS = 4; ROWS = 5; } else { COLS = 4; ROWS = 4; }
+    cv = makeCanvas(COLS * CELL, ROWS * CELL);
+    cv.style.margin = "0 auto";
+    stage.insertBefore(cv, side);
+    ctx = cv.getContext("2d");
+    tip.textContent = m === "sanguo"
+      ? "点击棋子选中，再用方向键移动。把「曹操」移到底部出口即过关！"
+      : "点击空格旁的数字方块让它滑入空位。把 1~15 按顺序排好即过关！";
+    cv.onclick = m === "digit"
+      ? (e) => {
+          const rect = cv.getBoundingClientRect();
+          const c = Math.floor((e.clientX - rect.left) / CELL);
+          const r = Math.floor((e.clientY - rect.top) / CELL);
+          digitMove(r * 4 + c);
+          updSide();
+        }
+      : (e) => {
+          const rect = cv.getBoundingClientRect();
+          const c = Math.floor((e.clientX - rect.left) / CELL);
+          const r = Math.floor((e.clientY - rect.top) / CELL);
+          sel = pieces.find(p => r >= p.r && r < p.r + p.h && c >= p.c && c < p.c + p.w) || null;
+          SFX.click(); drawSanguo();
+        };
+    if (m === "digit") { shuffleDigit(); drawDigit(); } else { startLevel(getLevel("huarong", HRD_LEVELS.length) - 1); }
+    updSide();
+  }
+
   [["e"], ["u", -1, 0], ["e"], ["l", 0, -1], ["e"], ["r", 0, 1], ["e"], ["d", 1, 0], ["e"]].forEach(([k, dr, dc]) => {
     if (k === "e") { dpad.appendChild(el("div", "empty")); return; }
     const b = el("button", "btn", { u: "↑", l: "←", r: "→", d: "↓" }[k]);
@@ -1381,8 +1615,10 @@ function huarongView(root) {
     if (e.key === "Escape") show(menuView);
   };
   window.addEventListener("keydown", keyH);
-  resetBtn.onclick = () => { SFX.click(); startLevel(lv); };
-  startLevel(0);
+  sanguoBtn.onclick = () => { SFX.click(); setMode("sanguo"); };
+  digitBtn.onclick = () => { SFX.click(); setMode("digit"); };
+  resetBtn.onclick = () => { SFX.click(); mode === "sanguo" ? startLevel(lv) : (shuffleDigit(), drawDigit(), updSide()); };
+  setMode("sanguo");
   return () => window.removeEventListener("keydown", keyH);
 }
 
@@ -1464,6 +1700,8 @@ function matchView(root) {
     }
     if (!passed && score >= target) {
       passed = true; SFX.win();
+      saveLevel("match", Math.min(MATCH_LEVELS, lv + 2));
+      checkToyUnlocks();
       const last = lv + 1 >= MATCH_LEVELS;
       showModal(last ? "🏆 全部通关！" : "🎉 过关！",
         [last ? `你完成了全部 ${MATCH_LEVELS} 关！` : `第 ${lv + 1} 关达标！分数 ${score} / ${target}`],
@@ -1519,7 +1757,7 @@ function matchView(root) {
     newGrid(); updSide(); draw();
   }
   againBtn.onclick = () => { SFX.click(); startLevel(lv); };
-  startLevel(0);
+  startLevel(getLevel("match", MATCH_LEVELS) - 1);
   return onEsc();
 }
 
@@ -1564,15 +1802,41 @@ function sudokuView(root) {
   side.appendChild(pad);
   const checkBtn = el("button", "btn primary", "检查答案"); checkBtn.style.cssText = "width:100%;margin-top:14px";
   const againBtn = el("button", "btn", "重开本关"); againBtn.style.cssText = "width:100%;margin-top:8px";
-  side.appendChild(checkBtn); side.appendChild(againBtn);
+  const autoBtn = el("button", "btn", "自动填充：关"); autoBtn.style.cssText = "width:100%;margin-top:8px";
+  autoBtn.onclick = () => { autoFill = !autoFill; autoBtn.textContent = "自动填充：" + (autoFill ? "开" : "关"); autoBtn.className = autoFill ? "btn mint" : "btn"; SFX.click(); if (autoFill) autoFillBoard(); };
+  side.appendChild(checkBtn); side.appendChild(autoBtn); side.appendChild(againBtn);
   stage.appendChild(side);
   root.appendChild(stage);
   root.appendChild(el("div", "hint", "点击格子后填入数字（键盘 1-9 也可，0/Delete 清除）· 红字为冲突 · ESC 返回"));
 
   const ctx = cv.getContext("2d");
   const CELL = 60;
-  let grid, fixed, sel = null, lv = 0;
+  let grid, fixed, sel = null, lv = getLevel("sudoku", SUDOKU_LEVELS) - 1, autoFill = false;
   const holesFor = i => 32 + i;
+
+  function autoFillBoard() {
+    let changed = true, filled = false;
+    while (changed) {
+      changed = false;
+      for (let r = 0; r < 9; r++) {
+        const empties = [], seen = new Set(); let dup = false;
+        for (let c = 0; c < 9; c++) { const v = grid[r][c]; if (!v) empties.push(c); else { if (seen.has(v)) dup = true; seen.add(v); } }
+        if (empties.length === 1 && !dup) {
+          const miss = [1,2,3,4,5,6,7,8,9].find(n => !seen.has(n));
+          if (miss !== undefined) { grid[r][empties[0]] = miss; changed = true; filled = true; }
+        }
+      }
+      for (let c = 0; c < 9; c++) {
+        const empties = [], seen = new Set(); let dup = false;
+        for (let r = 0; r < 9; r++) { const v = grid[r][c]; if (!v) empties.push(r); else { if (seen.has(v)) dup = true; seen.add(v); } }
+        if (empties.length === 1 && !dup) {
+          const miss = [1,2,3,4,5,6,7,8,9].find(n => !seen.has(n));
+          if (miss !== undefined) { grid[empties[0]][c] = miss; changed = true; filled = true; }
+        }
+      }
+    }
+    if (filled) { SFX.reveal(); draw(); }
+  }
 
   function reset() {
     const puzzle = genSudoku(holesFor(lv));
@@ -1620,6 +1884,7 @@ function sudokuView(root) {
     const [r, c] = sel;
     if (fixed[r][c]) { SFX.error(); return; }
     grid[r][c] = v; SFX.place(); draw();
+    if (autoFill) setTimeout(autoFillBoard, 60);
   }
   for (let v = 1; v <= 9; v++) {
     const b = el("button", "btn", String(v));
@@ -1663,6 +1928,8 @@ function sudokuView(root) {
     if (empty) { SFX.error(); showModal("还没填完", ["还有空格未填写，继续加油！"], [{ label: "继续", primary: true }]); return; }
     if (boardLegal()) {
       SFX.win();
+      saveLevel("sudoku", Math.min(SUDOKU_LEVELS, lv + 2));
+      checkToyUnlocks();
       const last = lv + 1 >= SUDOKU_LEVELS;
       showModal(last ? "🏆 全部通关！" : "🎉 恭喜过关！",
         [last ? `你完成了全部 ${SUDOKU_LEVELS} 关！` : `第 ${lv + 1} 关答案正确！`],
