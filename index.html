@@ -146,6 +146,7 @@
   }
   .guess-input:focus { outline: 2px solid var(--accent-2); }
   .sound-btn { position: fixed; top: 16px; right: 18px; z-index: 50; background: var(--panel); }
+  .auth-btn { position: fixed; top: 16px; right: 110px; z-index: 50; background: var(--panel); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* 转盘奖池编辑 */
   .wheel-edit-row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
@@ -160,6 +161,7 @@
 </head>
 <body>
 
+<button class="btn auth-btn" id="auth-btn">👤 登录</button>
 <button class="btn sound-btn" id="sound-btn">🔊 音效开</button>
 <div id="app"></div>
 
@@ -171,6 +173,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 "use strict";
 /* ================================================================
@@ -240,6 +243,111 @@ document.getElementById("sound-btn").onclick = function () {
 };
 if (!soundOn) document.getElementById("sound-btn").textContent = "🔇 音效关";
 window.addEventListener("pointerdown", () => ac(), { once: true });
+
+/* ================================================================
+   Supabase：邮箱登录 / 云端存档 / 多人联机
+   ================================================================ */
+const SUPABASE_URL = "https://oikxqtptkxbuaieljckv.supabase.co";
+const SUPABASE_ANON = "sb_publishable_8aQM-AY02vxwjrOoiwoJ8w_v4v6Q4bP";
+const sb = (typeof supabase !== "undefined") ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON) : null;
+let currentUser = null;
+const authBtn = document.getElementById("auth-btn");
+
+function cloudPushProgress() {
+  if (!sb || !currentUser) return;
+  const p = getProgress();
+  sb.from("progress").upsert({
+    user_id: currentUser.id,
+    snake: p.snake || 1, match: p.match || 1, sudoku: p.sudoku || 1, huarong: p.huarong || 1,
+    updated_at: new Date().toISOString()
+  }, { onConflict: "user_id" });
+}
+async function cloudPullProgress() {
+  if (!sb || !currentUser) return;
+  const { data } = await sb.from("progress").select("*").eq("user_id", currentUser.id).maybeSingle();
+  if (data) setProgress({ snake: data.snake, match: data.match, sudoku: data.sudoku, huarong: data.huarong });
+}
+function cloudPushPet() {
+  if (!sb || !currentUser) return;
+  const c = loadCat(); if (!c) return;
+  sb.from("pet").upsert({ user_id: currentUser.id, name: c.name, species: c.species || "cat", hunger: c.hunger, mood: c.mood, clean: c.clean, last_ts: new Date(c.lastTs || Date.now()).toISOString() }, { onConflict: "user_id" });
+}
+async function cloudPullPet() {
+  if (!sb || !currentUser) return;
+  const { data } = await sb.from("pet").select("*").eq("user_id", currentUser.id).maybeSingle();
+  if (data) saveCat({ name: data.name, species: data.species || "cat", hunger: data.hunger, mood: data.mood, clean: data.clean, lastTs: new Date(data.last_ts).getTime() });
+}
+function cloudPushToys() {
+  if (!sb || !currentUser) return;
+  const owned = getUnlockedToys();
+  owned.forEach(tid => sb.from("toys").upsert({ user_id: currentUser.id, toy_id: tid }, { onConflict: "user_id,toy_id" }));
+}
+async function cloudPullToys() {
+  if (!sb || !currentUser) return;
+  const { data } = await sb.from("toys").select("toy_id").eq("user_id", currentUser.id);
+  if (data) localStorage.setItem("pt_toys", JSON.stringify(data.map(r => r.toy_id)));
+}
+
+// 把本地存档函数接上云端
+const _saveLevelOrig = saveLevel;
+saveLevel = function (game, lv) { _saveLevelOrig(game, lv); cloudPushProgress(); };
+const _saveCatOrig = saveCat;
+saveCat = function (c) { _saveCatOrig(c); cloudPushPet(); };
+const _checkToyOrig = checkToyUnlocks;
+checkToyUnlocks = function () { const r = _checkToyOrig(); if (r.length) cloudPushToys(); return r; };
+
+function updateAuthBtn() {
+  authBtn.textContent = currentUser ? "👤 " + (currentUser.email || "已登录") : "👤 登录";
+}
+authBtn.onclick = () => {
+  if (currentUser) {
+    showModal("账号", ["已登录：" + (currentUser.email || "")],
+      [{ label: "退出登录", primary: true, onClick: async () => { await sb.auth.signOut(); } },
+       { label: "关闭" }]);
+  } else {
+    showAuthModal();
+  }
+};
+function showAuthModal() {
+  const email = el("input", "guess-input"); email.placeholder = "邮箱"; email.type = "email";
+  const pw = el("input", "guess-input"); pw.placeholder = "密码"; pw.type = "password";
+  const msg = el("div", "hint");
+  const box = document.createElement("div");
+  box.style.cssText = "display:flex;flex-direction:column;gap:10px;text-align:left";
+  box.appendChild(email); box.appendChild(pw); box.appendChild(msg);
+  showModal("登录 / 注册", [box],
+    [{ label: "登录", primary: true, onClick: async () => {
+        msg.textContent = "登录中…";
+        const { error } = await sb.auth.signInWithPassword({ email: email.value, password: pw.value });
+        if (error) { msg.textContent = "❌ " + error.message; return false; }
+        hideModal();
+      }},
+     { label: "注册", onClick: async () => {
+        msg.textContent = "注册中…";
+        const { error } = await sb.auth.signUp({ email: email.value, password: pw.value });
+        if (error) { msg.textContent = "❌ " + error.message; return false; }
+        msg.textContent = "✅ 注册成功，请查收邮箱验证（若未收到可直接登录）"; return false;
+      }},
+     { label: "取消" }]);
+}
+
+(async function initAuth() {
+  if (!sb) { authBtn.style.display = "none"; return; }
+  const { data: { session } } = await sb.auth.getSession();
+  currentUser = session ? session.user : null;
+  updateAuthBtn();
+  if (currentUser) { await cloudPullProgress(); await cloudPullPet(); await cloudPullToys(); }
+  sb.auth.onAuthStateChange(async (event, session) => {
+    currentUser = session ? session.user : null;
+    updateAuthBtn();
+    if (event === "SIGNED_IN") {
+      await cloudPullProgress(); await cloudPullPet(); await cloudPullToys();
+      if (typeof show === "function") show(menuView);
+    } else if (event === "SIGNED_OUT") {
+      if (typeof show === "function") show(menuView);
+    }
+  });
+})();
 
 /* ================================================================
    主题系统（多颜色主题，可切换并记住）
@@ -320,15 +428,24 @@ function show(viewFn, ...args) {
 }
 function showModal(title, lines, buttons) {
   document.getElementById("modal-title").textContent = title;
-  document.getElementById("modal-lines").innerHTML =
-    (Array.isArray(lines) ? lines : [lines]).map(l => "<div>" + l + "</div>").join("");
+  const linesEl = document.getElementById("modal-lines");
+  linesEl.innerHTML = "";
+  (Array.isArray(lines) ? lines : [lines]).forEach(l => {
+    const wrap = document.createElement("div");
+    if (l instanceof Element) wrap.appendChild(l);
+    else wrap.innerHTML = l;
+    linesEl.appendChild(wrap);
+  });
   const box = document.getElementById("modal-btns");
   box.innerHTML = "";
   buttons.forEach(b => {
     const btn = document.createElement("button");
     btn.className = "btn" + (b.primary ? " primary" : "");
     btn.textContent = b.label;
-    btn.onclick = () => { hideModal(); b.onClick && b.onClick(); };
+    btn.onclick = () => {
+      const ret = b.onClick && b.onClick();
+      if (ret !== false) hideModal();
+    };
     box.appendChild(btn);
   });
   $mask.classList.add("show");
@@ -1151,6 +1268,8 @@ function guessView(root) {
   side.appendChild(el("h3", null, "AI 正在作画…"));
   const statEl = el("div", "row"); statEl.style.color = "var(--text-dim)";
   side.appendChild(statEl);
+  const chat = el("div"); chat.style.cssText = "max-height:160px;overflow-y:auto;font-size:13px;line-height:1.7;color:var(--text-dim);margin:8px 0;min-height:60px";
+  side.appendChild(chat);
   const input = el("input", "guess-input");
   input.placeholder = "输入你猜的词";
   side.appendChild(input);
@@ -1160,11 +1279,30 @@ function guessView(root) {
   side.appendChild(guessBtn); side.appendChild(giveUpBtn); side.appendChild(nextBtn);
   stage.appendChild(side);
   root.appendChild(stage);
-  root.appendChild(el("div", "hint", "看 AI 一步步画完，抢先猜出答案 · ESC 返回"));
+
+  const lobby = el("div");
+  lobby.style.cssText = "text-align:center;margin:14px auto;max-width:520px;background:var(--panel);border:2px solid var(--panel-2);border-radius:18px;padding:22px";
+  lobby.innerHTML = "<h3 style='color:var(--accent);margin-bottom:12px'>选择玩法</h3>";
+  const singleBtn = el("button", "btn primary", "🎯 单人模式"); singleBtn.style.margin = "6px";
+  const createBtn = el("button", "btn mint", "🏠 创建房间（多人）"); createBtn.style.margin = "6px";
+  const joinRow = el("div", "mode-row");
+  const codeIn = el("input", "guess-input"); codeIn.placeholder = "输入 4 位房间号"; codeIn.style.width = "160px"; codeIn.maxLength = 4;
+  const joinBtn = el("button", "btn", "加入房间");
+  joinRow.appendChild(codeIn); joinRow.appendChild(joinBtn);
+  lobby.appendChild(singleBtn); lobby.appendChild(createBtn); lobby.appendChild(joinRow);
+  const lobbyMsg = el("div", "hint"); lobby.appendChild(lobbyMsg);
+  root.insertBefore(lobby, stage);
+  stage.style.display = "none";
 
   const ctx = cv.getContext("2d");
   let item = null, step = 0, timer = null, over = false;
+  let channel = null, isHost = false, roomCode = "";
 
+  function addChat(text, who) {
+    const d = document.createElement("div");
+    d.innerHTML = (who ? "<b style='color:var(--accent-2)'>" + who + "：</b>" : "") + text;
+    chat.appendChild(d); chat.scrollTop = chat.scrollHeight;
+  }
   function execOp(op) {
     ctx.lineCap = "round";
     const [t, ...a] = op;
@@ -1173,10 +1311,10 @@ function guessView(root) {
     else if (t === "l") { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[2], a[3]); ctx.strokeStyle = a[4]; ctx.lineWidth = a[5] || 6; ctx.stroke(); }
     else if (t === "a") { ctx.beginPath(); ctx.arc(a[0], a[1], a[2], a[3], a[4]); ctx.strokeStyle = a[5]; ctx.lineWidth = 7; ctx.stroke(); }
   }
-  function start() {
+  function playWord(idx) {
     clearInterval(timer); over = false; step = 0;
     ctx.clearRect(0, 0, 400, 400);
-    item = GUESS_WORDS[rndi(0, GUESS_WORDS.length - 1)];
+    item = GUESS_WORDS[idx];
     input.value = ""; input.focus();
     statEl.textContent = "作画中… 0/" + item.ops.length;
     timer = setInterval(() => {
@@ -1185,43 +1323,88 @@ function guessView(root) {
         statEl.textContent = `作画中… ${step}/${item.ops.length}`;
         if (step % 3 === 0) SFX.tick();
       } else {
-        clearInterval(timer);
-        statEl.textContent = "画完了！这是什么？";
+        clearInterval(timer); statEl.textContent = "画完了！这是什么？";
       }
     }, 420);
   }
+  function startSingle() { lobby.style.display = "none"; stage.style.display = "flex"; playWord(rndi(0, GUESS_WORDS.length - 1)); }
+  function startHost() { playWord(rndi(0, GUESS_WORDS.length - 1)); if (channel) channel.send({ type: "broadcast", event: "start", payload: { wordIndex: GUESS_WORDS.indexOf(item) } }); }
+
   function tryGuess() {
-    if (over) return;
+    if (over || !item) return;
     const v = input.value.trim();
     if (!v) return;
-    if (v === item.w || (item.w.length > 1 && v.includes(item.w)) || (v.length > 1 && item.w.includes(v))) {
+    const me = currentUser ? (currentUser.email.split("@")[0]) : "我";
+    if (channel) channel.send({ type: "broadcast", event: "guess", payload: { who: me, text: v } });
+    input.value = ""; input.focus();
+  }
+  function judgeGuess(who, text) {
+    if (over || !item) return;
+    const ok = text === item.w || (item.w.length > 1 && text.includes(item.w)) || (text.length > 1 && item.w.includes(text));
+    if (ok) {
       over = true; clearInterval(timer);
       while (step < item.ops.length) execOp(item.ops[step++]);
       SFX.win();
-      showModal("🎉 猜对了！", ["答案就是：<b style='color:var(--accent)'>" + item.w + "</b>"],
-        [{ label: "下一题", primary: true, onClick: start },
+      addChat("🎉 <b style='color:var(--accent)'>" + who + "</b> 猜对了！答案是「" + item.w + "」");
+      showModal("🎉 " + who + " 猜对了！", ["答案：<b style='color:var(--accent)'>" + item.w + "</b>"],
+        [{ label: "下一题", primary: true, onClick: isHost ? startHost : () => addChat("等待房主开始下一题…") },
          { label: "返回主菜单", onClick: () => show(menuView) }]);
     } else {
       SFX.error();
-      statEl.textContent = "「" + v + "」不对，再想想～";
-      input.select();
+      addChat("「" + text + "」不对～", who);
     }
   }
   guessBtn.onclick = tryGuess;
-  const keyH = (e) => { if (e.key === "Enter") tryGuess(); if (e.key === "Escape") show(menuView); };
+  const keyH = (e) => { if (e.key === "Enter") tryGuess(); if (e.key === "Escape") { leaveRoom(); show(menuView); } };
   window.addEventListener("keydown", keyH);
   giveUpBtn.onclick = () => {
     if (over) return;
     over = true; clearInterval(timer);
     while (step < item.ops.length) execOp(item.ops[step++]);
     SFX.lose();
+    addChat("答案是「" + item.w + "」");
     showModal("🙈 揭晓答案", ["AI 画的是：<b style='color:var(--accent)'>" + item.w + "</b>"],
-      [{ label: "下一题", primary: true, onClick: start },
+      [{ label: "下一题", primary: true, onClick: isHost ? startHost : () => addChat("等待房主开始下一题…") },
        { label: "返回主菜单", onClick: () => show(menuView) }]);
   };
-  nextBtn.onclick = start;
-  start();
-  return () => { clearInterval(timer); window.removeEventListener("keydown", keyH); };
+  nextBtn.onclick = isHost ? startHost : () => addChat("等待房主开始下一题…");
+
+  singleBtn.onclick = startSingle;
+  createBtn.onclick = () => {
+    if (!sb || !currentUser) { lobbyMsg.textContent = "❌ 多人联机需要先登录（右上角）"; return; }
+    roomCode = String(rndi(1000, 9999));
+    lobbyMsg.innerHTML = "✅ 房间号：<b style='color:var(--accent);font-size:22px'>" + roomCode + "</b><br>把房间号发给朋友，让他们输入加入";
+    isHost = true;
+    joinChannel(roomCode, true);
+    lobby.style.display = "none"; stage.style.display = "flex";
+    addChat("你是房主，点「下一题」开始出题");
+  };
+  joinBtn.onclick = () => {
+    if (!sb || !currentUser) { lobbyMsg.textContent = "❌ 多人联机需要先登录（右上角）"; return; }
+    const code = codeIn.value.trim();
+    if (!/^\d{4}$/.test(code)) { lobbyMsg.textContent = "请输入 4 位房间号"; return; }
+    roomCode = code; isHost = false;
+    lobbyMsg.textContent = "加入中…";
+    joinChannel(code, false);
+  };
+
+  function joinChannel(code, host) {
+    channel = sb.channel("guess:" + code);
+    channel.on("broadcast", { event: "start" }, ({ payload }) => {
+      lobby.style.display = "none"; stage.style.display = "flex";
+      playWord(payload.wordIndex);
+      chat.innerHTML = ""; addChat("新一题开始，AI 正在作画…");
+    });
+    channel.on("broadcast", { event: "guess" }, ({ payload }) => {
+      judgeGuess(payload.who, payload.text);
+    });
+    channel.subscribe();
+  }
+  function leaveRoom() {
+    if (channel) { try { sb.removeChannel(channel); } catch (e) {} channel = null; }
+  }
+
+  return () => { clearInterval(timer); window.removeEventListener("keydown", keyH); leaveRoom(); };
 }
 
 /* ================================================================
