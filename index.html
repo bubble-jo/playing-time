@@ -157,6 +157,13 @@
   .wheel-edit-row input.name-in { flex: 1; min-width: 0; }
   .wheel-edit-row input.w-in { width: 56px; text-align: center; }
   .wheel-edit-row .del { padding: 6px 10px; font-size: 13px; border-radius: 10px; }
+
+  /* 闯关地图 */
+  .lv-node { width: 52px; height: 52px; border-radius: 50%; font-size: 17px; font-weight: 900; padding: 0; border: 3px solid #fff; }
+  .lv-node.done { background: linear-gradient(135deg, #8adab2, #b6e8cd); color: #2f5a48; }
+  .lv-node.cur { background: linear-gradient(135deg, var(--accent), #ffb59e); color: #fff; animation: lvPulse 1.2s infinite; }
+  .lv-node.lock { background: #d8cfc4; color: #8f8378; cursor: not-allowed; border-color: #eee8e0; }
+  @keyframes lvPulse { 0%,100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,158,170,.55); } 50% { transform: scale(1.14); box-shadow: 0 0 0 9px rgba(255,158,170,0); } }
 </style>
 </head>
 <body>
@@ -612,7 +619,11 @@ function getLevel(gameId, max) {
   const v = getProgress()[gameId] || 1;
   return Math.max(1, Math.min(max, v));
 }
-function saveLevel(gameId, level) { setProgress({ [gameId]: level }); }
+function saveLevel(gameId, level) {
+  // 只增不减：回玩旧关不会覆盖最高进度
+  const cur = getProgress()[gameId] || 1;
+  setProgress({ [gameId]: Math.max(level, cur) });
+}
 
 // 闯关解锁的道具：type 玩具=给它玩(心情+15) / 食物=喂它吃(饱腹+15)
 // need: {游戏id: 到达关卡}，每个闯关游戏都有多个 milestone
@@ -703,14 +714,56 @@ function el(tag, cls, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
-function backBar(title) {
+function backBar(title, mapCfg) {
   const bar = el("div", "topbar");
   const back = el("button", "btn", "← 返回主菜单");
   back.onclick = () => { SFX.click(); show(menuView); };
   bar.appendChild(back);
   const t = el("div", "game-title", title); t.style.margin = "0";
   bar.appendChild(t);
+  if (mapCfg) {
+    const mb = el("button", "btn", "🗺 关卡地图");
+    mb.style.marginLeft = "auto";
+    mb.onclick = () => { SFX.click(); openLevelMap(mapCfg); };
+    bar.appendChild(mb);
+  }
   return bar;
+}
+
+// 卡通闯关地图：已通过的关可回看，未解锁的关 🔒
+// cfg: { title, game, total, onPick(i) }，game/total 可以是函数（华容道双模式用）
+function openLevelMap(cfg) {
+  const game = typeof cfg.game === "function" ? cfg.game() : cfg.game;
+  const total = typeof cfg.total === "function" ? cfg.total() : cfg.total;
+  const unlocked = getLevel(game, total);
+  const mask = el("div");
+  mask.style.cssText = "position:fixed;inset:0;background:rgba(90,74,66,.45);z-index:120;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:16px";
+  const panel = el("div");
+  panel.style.cssText = "background:linear-gradient(180deg,#e3f6e8,#fdf6e3);border:3px solid var(--accent-2);border-radius:24px;padding:20px 22px 16px;max-width:520px;width:100%;max-height:82vh;overflow:auto;text-align:center;box-shadow:0 14px 44px rgba(0,0,0,.25)";
+  const h = el("h2", null, "🗺️ " + cfg.title + " · 闯关地图"); h.style.cssText = "color:#5aa87f;margin-bottom:4px";
+  panel.appendChild(h);
+  const dec = el("div", null, "🌸 🌿 🌼 🍀 🌸 🌿 🌼 🍀 🌸 🌿"); dec.style.cssText = "letter-spacing:6px;font-size:15px;opacity:.85";
+  panel.appendChild(dec);
+  const grid = el("div"); grid.style.cssText = "display:flex;flex-wrap:wrap;gap:16px 20px;justify-content:center;margin:18px 0 8px";
+  for (let i = 1; i <= total; i++) {
+    const st = i < unlocked ? "done" : (i === unlocked ? "cur" : "lock");
+    const b = el("button", "btn lv-node " + st, st === "lock" ? "🔒" : String(i));
+    if (st === "done") b.title = "第 " + i + " 关 · 已通过，点我回玩";
+    if (st === "cur") b.title = "第 " + i + " 关 · 当前挑战";
+    if (st === "lock") b.title = "第 " + i + " 关 · 还未解锁";
+    if (st !== "lock") b.onclick = () => { SFX.click(); mask.remove(); cfg.onPick(i - 1); };
+    grid.appendChild(b);
+  }
+  panel.appendChild(grid);
+  const legend = el("div", "hint", "绿色=已通过（可回玩）　闪烁=当前关　🔒=未解锁");
+  legend.style.marginTop = "2px";
+  panel.appendChild(legend);
+  const closeBtn = el("button", "btn", "关闭"); closeBtn.style.marginTop = "12px";
+  closeBtn.onclick = () => mask.remove();
+  panel.appendChild(closeBtn);
+  mask.onclick = (e) => { if (e.target === mask) mask.remove(); };
+  mask.appendChild(panel);
+  document.body.appendChild(mask);
 }
 function onEsc() {
   const h = (e) => { if (e.key === "Escape") show(menuView); };
@@ -1935,7 +1988,10 @@ function spyView(root) {
    6. 贪吃蛇（20 关，速度递增）
    ================================================================ */
 function snakeView(root) {
-  root.appendChild(backBar("🐍 贪吃蛇"));
+  root.appendChild(backBar("🐍 贪吃蛇", {
+    title: "贪吃蛇", game: "snake", total: SNAKE_LEVELS,
+    onPick: (i) => { lv = i; reset(); }
+  }));
   const stage = el("div", "stage");
   const cv = makeCanvas(480, 480);
   stage.appendChild(cv);
@@ -2128,7 +2184,12 @@ const HRD_LEVELS = [
 ];
 
 function huarongView(root) {
-  root.appendChild(backBar("🧩 华容道"));
+  root.appendChild(backBar("🧩 华容道", {
+    title: "华容道",
+    game: () => mode === "sanguo" ? "huarong" : "digit",
+    total: () => mode === "sanguo" ? HRD_LEVELS.length : DIGIT_LEVELS.length,
+    onPick: (i) => { if (mode === "sanguo") startLevel(i); else startDigit(i); }
+  }));
   const stage = el("div", "stage");
   const CELL = 104;
   let mode = "sanguo"; // sanguo | digit
@@ -2387,7 +2448,10 @@ function huarongView(root) {
    8. 宝石消消乐（20 关目标分）
    ================================================================ */
 function matchView(root) {
-  root.appendChild(backBar("💎 宝石消消乐"));
+  root.appendChild(backBar("💎 宝石消消乐", {
+    title: "消消乐", game: "match", total: MATCH_LEVELS,
+    onPick: (i) => { lv = i; newBoard(); updSide(); }
+  }));
   const stage = el("div", "stage");
   const cv = makeCanvas(480, 480);
   stage.appendChild(cv);
@@ -2551,7 +2615,10 @@ function genSudoku(holes) {
 }
 
 function sudokuView(root) {
-  root.appendChild(backBar("🔢 数独"));
+  root.appendChild(backBar("🔢 数独", {
+    title: "数独", game: "sudoku", total: SUDOKU_LEVELS,
+    onPick: (i) => { lv = i; reset(); }
+  }));
   const stage = el("div", "stage");
   const cv = makeCanvas(540, 540);
   stage.appendChild(cv);
