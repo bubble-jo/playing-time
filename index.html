@@ -614,15 +614,34 @@ function getLevel(gameId, max) {
 }
 function saveLevel(gameId, level) { setProgress({ [gameId]: level }); }
 
-// 玩具解锁条件：{toyId, emoji, name, need: {gameId: level}}
+// 闯关解锁的道具：type 玩具=给它玩(心情+15) / 食物=喂它吃(饱腹+15)
+// need: {游戏id: 到达关卡}，每个闯关游戏都有多个 milestone
 const TOYS = [
-  { id: "ball",   emoji: "🧶", name: "毛线球",   need: { snake: 5 } },
-  { id: "fish",   emoji: "🐟", name: "小鱼干",   need: { match: 10 } },
-  { id: "feather",emoji: "🪶", name: "逗猫棒",   need: { sudoku: 5 } },
-  { id: "treat",  emoji: "🍪", name: "小饼干",   need: { huarong: 3 } },
-  { id: "ball2",  emoji: "⚽", name: "小皮球",   need: { snake: 15 } },
-  { id: "cake",   emoji: "🎂", name: "小蛋糕",   need: { match: 20 } },
+  { id: "ball",    emoji: "🧶", name: "毛线球",   type: "toy",  need: { snake: 5 } },
+  { id: "fish",    emoji: "🐟", name: "小鱼干",   type: "food", need: { snake: 10 } },
+  { id: "ball2",   emoji: "⚽", name: "小皮球",   type: "toy",  need: { snake: 15 } },
+  { id: "milk",    emoji: "🥛", name: "鲜牛奶",   type: "food", need: { match: 3 } },
+  { id: "feather", emoji: "🪶", name: "逗猫棒",   type: "toy",  need: { match: 8 } },
+  { id: "cake",    emoji: "🎂", name: "小蛋糕",   type: "food", need: { match: 15 } },
+  { id: "treat",   emoji: "🍪", name: "小饼干",   type: "food", need: { sudoku: 3 } },
+  { id: "mouse",   emoji: "🐭", name: "玩具老鼠", type: "toy",  need: { sudoku: 8 } },
+  { id: "pudding", emoji: "🍮", name: "小布丁",   type: "food", need: { sudoku: 15 } },
+  { id: "bell",    emoji: "🔔", name: "小铃铛",   type: "toy",  need: { huarong: 2 } },
+  { id: "bone",    emoji: "🦴", name: "大骨头",   type: "food", need: { huarong: 5 } },
+  { id: "frisbee", emoji: "🥏", name: "小飞盘",   type: "toy",  need: { digit: 2 } },
+  { id: "candy",   emoji: "🍬", name: "彩虹糖",   type: "food", need: { digit: 3 } },
 ];
+const TOY_GAME_NAMES = { snake: "贪吃蛇", match: "消消乐", sudoku: "数独", huarong: "华容道", digit: "数字华容道" };
+function nextUnlockHint() {
+  const prog = getProgress();
+  const owned = getUnlockedToys();
+  const ups = TOYS.filter(t => !owned.includes(t.id)).map(t => {
+    const [g, lv] = Object.entries(t.need)[0];
+    return { t, g, lv, left: lv - (prog[g] || 1) };
+  }).filter(x => x.left > 0).sort((a, b) => a.left - b.left).slice(0, 3);
+  if (!ups.length) return "🎉 道具全部集齐啦，你太厉害了！";
+  return "下一个道具：" + ups.map(x => TOY_GAME_NAMES[x.g] + " " + x.lv + " 关→" + x.t.emoji + x.t.name).join("；");
+}
 function getUnlockedToys() {
   try { return JSON.parse(localStorage.getItem("pt_toys")) || []; } catch (e) { return []; }
 }
@@ -857,26 +876,31 @@ function buildCatPanel() {
   });
   panel.appendChild(btns);
 
-  // 玩具栏（闯关解锁）
+  // 道具栏（闯关解锁的食物和玩具，点一下互动）
+  let playEmoji = null, playUntil = 0;
+  panel.appendChild(el("div", "hint", "🎁 我的道具（点一下和它互动）"));
   const toysDiv = el("div", "toys-row");
   const owned = getUnlockedToys();
   if (owned.length === 0) {
-    toysDiv.appendChild(el("div", "hint", "🎁 玩游戏解锁玩具：贪吃蛇5关→毛线球 等"));
+    toysDiv.appendChild(el("div", "hint", "还没有道具，去闯关赢一个吧！"));
   } else {
     owned.forEach(tid => {
       const toy = TOYS.find(t => t.id === tid);
       if (!toy) return;
       const b = el("button", "btn toy-btn", toy.emoji);
-      b.title = toy.name + " · 给它玩";
+      b.title = toy.type === "food" ? toy.name + " · 喂它吃（饱腹+15）" : toy.name + " · 给它玩（心情+15）";
       b.onclick = () => {
-        cat.mood = Math.min(100, cat.mood + 15);
+        if (toy.type === "food") { cat.hunger = Math.min(100, cat.hunger + 15); SFX.eat(); }
+        else { cat.mood = Math.min(100, cat.mood + 15); SFX.win(); }
+        playEmoji = toy.emoji; playUntil = performance.now() + 4000;
         cat.lastTs = Date.now();
-        saveCat(cat); updBars(); floatHeart(panel); SFX.win();
+        saveCat(cat); updBars(); floatHeart(panel);
       };
       toysDiv.appendChild(b);
     });
   }
   panel.appendChild(toysDiv);
+  panel.appendChild(el("div", "hint", nextUnlockHint()));
 
   // 主题颜色选择
   const themeDiv = el("div", "theme-row");
@@ -906,7 +930,10 @@ function buildCatPanel() {
     saveCat(cat); updBars();
   }, 30000);
 
-  drawCatLoop(cv, () => cat);
+  drawCatLoop(cv, () => {
+    if (playEmoji && performance.now() > playUntil) playEmoji = null;
+    return Object.assign({}, cat, { playEmoji });
+  });
   return panel;
 }
 
@@ -928,13 +955,13 @@ function drawCatLoop(cv, getCat) {
     const cat = getCat();
     const avg = cat ? (cat.hunger ?? 80) * 0.4 + (cat.mood ?? 80) * 0.4 + (cat.clean ?? 80) * 0.2 : 80;
     const mood = avg > 55 ? "happy" : (avg > 30 ? "normal" : "sad");
-    drawPet(ctx, (t - t0) / 1000, mood, petType(cat && cat.species));
+    drawPet(ctx, (t - t0) / 1000, mood, petType(cat && cat.species), cat && cat.playEmoji);
     catRaf = requestAnimationFrame(frame);
   }
   catRaf = requestAnimationFrame(frame);
 }
 
-function drawPet(ctx, t, mood, pt) {
+function drawPet(ctx, t, mood, pt, pe) {
   ctx.clearRect(0, 0, 180, 170);
   // 草地背景
   ctx.fillStyle = "#eef7e4";
@@ -1055,6 +1082,12 @@ function drawPet(ctx, t, mood, pt) {
     ctx.lineTo(cx + s * 42, cy - 12 + dy * 2);
     ctx.stroke();
   });
+  // 正在玩的道具 / 正在吃的食物（弹跳动画）
+  if (pe) {
+    const by = cy + 42 + Math.sin(t * 6) * 8;
+    ctx.font = "26px serif"; ctx.textAlign = "center";
+    ctx.fillText(pe, cx + 54, by);
+  }
 }
 
 /* ================================================================
@@ -1483,6 +1516,16 @@ const GUESS_WORDS = (() => {
     { w: "杯子", ops: [["l",150,140,160,300,W,8],["l",250,140,240,300,W,8],["l",160,300,240,300,W,8],["a",265,210,32,-1.3,1.3,W],["l",175,180,225,180,"#a5713f",10]] },
     { w: "星星", ops: [["l",200,100,225,175,Y,8],["l",225,175,305,175,Y,8],["l",305,175,242,220,Y,8],["l",242,220,265,300,Y,8],["l",265,300,200,255,Y,8],["l",200,255,135,300,Y,8],["l",135,300,158,220,Y,8],["l",158,220,95,175,Y,8],["l",95,175,175,175,Y,8],["l",175,175,200,100,Y,8]] },
     { w: "雪人", ops: [["c",200,270,70,K],["c",200,160,45,K],["c",185,150,7,"#4a3b34"],["c",215,150,7,"#4a3b34"],["l",200,165,235,172,O,6],["c",200,255,6,R],["c",200,285,6,R],["l",135,230,90,195,"#a5713f",6],["l",265,230,310,195,"#a5713f",6]] },
+    { w: "自行车", ops: [["a",110,285,42,0,6.3,"#4a3b34"],["a",290,285,42,0,6.3,"#4a3b34"],["l",110,285,190,190,"#5ea9e9",8],["l",190,190,290,285,"#5ea9e9",8],["l",110,285,290,285,"#5ea9e9",8],["l",190,190,185,160,"#4a3b34",6],["l",165,160,210,160,"#4a3b34",6],["l",278,285,300,240,"#4a3b34",6],["l",285,240,315,240,"#4a3b34",6]] },
+    { w: "飞机", ops: [["e",200,220,110,26,"#5ea9e9"],["l",180,205,150,140,"#4a3b34",8],["l",150,140,225,205,"#4a3b34",8],["l",295,212,335,168,"#4a3b34",8],["l",335,168,325,215,"#4a3b34",8],["c",150,215,7,"#fffdf7"],["c",190,215,7,"#fffdf7"],["c",230,215,7,"#fffdf7"]] },
+    { w: "蛋糕", ops: [["l",120,300,280,300,"#f7d9b0",55],["l",140,240,260,240,"#ff9eaa",45],["l",160,195,240,195,"#f7d9b0",35],["l",200,170,200,140,"#5ea9e9",6],["c",200,130,8,"#f5b81e"],["c",150,215,6,R],["c",200,215,6,R],["c",250,215,6,R]] },
+    { w: "钢琴", ops: [["l",110,250,290,250,"#4a3b34",90],["l",130,235,130,290,"#fffdf7",12],["l",160,235,160,290,"#fffdf7",12],["l",190,235,190,290,"#fffdf7",12],["l",220,235,220,290,"#fffdf7",12],["l",250,235,250,290,"#fffdf7",12],["l",145,232,145,258,"#4a3b34",8],["l",205,232,205,258,"#4a3b34",8],["l",135,305,135,350,"#4a3b34",8],["l",265,305,265,350,"#4a3b34",8]] },
+    { w: "螃蟹", ops: [["e",200,245,55,35,"#ff8d9d"],["c",180,195,7,"#4a3b34"],["c",220,195,7,"#4a3b34"],["l",180,208,180,200,"#4a3b34",4],["l",220,208,220,200,"#4a3b34",4],["a",130,205,20,2.4,5.6,"#ff8d9d"],["a",270,205,20,3.9,0.7,"#ff8d9d"],["l",160,225,130,200,"#ff8d9d",8],["l",240,225,270,200,"#ff8d9d",8],["l",155,265,120,290,"#ff8d9d",6],["l",175,272,150,300,"#ff8d9d",6],["l",245,265,280,290,"#ff8d9d",6],["l",225,272,250,300,"#ff8d9d",6]] },
+    { w: "直升机", ops: [["e",200,235,60,32,"#7fd6a4"],["l",255,235,320,215,"#7fd6a4",10],["l",320,215,332,190,"#7fd6a4",8],["l",200,205,200,182,"#4a3b34",6],["l",125,176,275,176,"#4a3b34",8],["l",175,268,165,285,"#4a3b34",6],["l",225,268,235,285,"#4a3b34",6],["l",145,288,255,288,"#4a3b34",7],["c",170,232,10,"#fffdf7"]] },
+    { w: "灯笼", ops: [["e",200,230,55,60,"#ff8d9d"],["l",170,168,230,168,"#f5b81e",14],["l",170,292,230,292,"#f5b81e",14],["l",200,160,200,140,"#4a3b34",4],["l",185,180,180,285,"#d96a76",3],["l",215,180,220,285,"#d96a76",3],["l",200,300,200,340,"#f5b81e",5],["c",200,348,7,"#f5b81e"]] },
+    { w: "机器人", ops: [["l",150,120,250,120,"#5ea9e9",70],["l",145,230,255,230,"#a98ee6",90],["l",200,85,200,62,"#4a3b34",5],["c",200,54,8,R],["c",175,112,9,"#fffdf7"],["c",225,112,9,"#fffdf7"],["c",175,112,4,"#4a3b34"],["c",225,112,4,"#4a3b34"],["l",175,140,225,150,"#4a3b34",5],["l",145,200,110,250,"#5ea9e9",10],["l",255,200,290,250,"#5ea9e9",10],["l",175,278,175,330,"#a98ee6",12],["l",225,278,225,330,"#a98ee6",12]] },
+    { w: "风扇", ops: [["a",200,215,72,0,6.3,"#5ea9e9"],["l",200,215,200,150,"#7fd6a4",16],["l",200,215,260,255,"#7fd6a4",16],["l",200,215,140,255,"#7fd6a4",16],["c",200,215,12,"#f5b81e"],["l",200,290,200,335,"#4a3b34",10],["l",155,342,245,342,"#4a3b34",14]] },
+    { w: "手表", ops: [["l",200,120,200,175,"#8a5a3a",32],["l",200,265,200,325,"#8a5a3a",32],["a",200,220,48,0,6.3,"#f5b81e"],["c",200,220,40,"#fffdf7"],["l",200,220,200,190,"#4a3b34",5],["l",200,220,225,235,"#4a3b34",5]] },
   ];
 })();
 
@@ -1564,7 +1607,14 @@ function guessView(root) {
     mode = "single";
     clearInterval(timer); over = false; step = 0;
     ctx.clearRect(0, 0, 400, 400);
-    item = GUESS_WORDS[rndi(0, GUESS_WORDS.length - 1)];
+    // 个人不重复出题：全出完一轮才重置
+    let seen; try { seen = JSON.parse(localStorage.getItem("pt_guess_seen")) || []; } catch (e) { seen = []; }
+    let pool = GUESS_WORDS.map((_, i) => i).filter(i => !seen.includes(i));
+    if (!pool.length) { pool = GUESS_WORDS.map((_, i) => i); seen = []; statEl.textContent = "词库已玩完一轮，重新开始洗牌！"; }
+    const idx = pool[rndi(0, pool.length - 1)];
+    seen.push(idx);
+    localStorage.setItem("pt_guess_seen", JSON.stringify(seen));
+    item = GUESS_WORDS[idx];
     statEl.textContent = "AI 作画中… 在下方输入你的猜测！";
     timer = setInterval(() => {
       if (step < item.ops.length) {
