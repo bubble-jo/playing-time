@@ -197,7 +197,7 @@
 <script>
 "use strict";
 // PWA：注册 Service Worker（离线缓存 + 可安装到手机桌面）
-if ("serviceWorker" in navigator) { navigator.serviceWorker.register("sw.js").catch(() => {}); }
+if ("serviceWorker" in navigator) { navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {}); }
 /* ================================================================
    ★★★ 可自定义配置区 ★★★
    ================================================================ */
