@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -425,6 +425,158 @@ function showAuthModal() {
 })();
 
 /* ================================================================
+   多人联机房间系统（你画我猜 / 谁是卧底 共用）
+   ================================================================ */
+function makeRoom(code) {
+  const ch = sb.channel("room:" + code, { config: { presence: { key: currentUser.id } } });
+  const room = {
+    code, channel: ch, members: [], isHost: false, hostId: null, onMembers: null, joined: false,
+    send(evt, payload) { ch.send({ type: "broadcast", event: evt, payload }); },
+    on(evt, fn) { ch.on("broadcast", { event: evt }, ({ payload }) => fn(payload)); },
+    leave() { try { sb.removeChannel(ch); } catch (e) {} },
+    me() { return currentUser ? currentUser.id : ""; },
+  };
+  ch.on("presence", { event: "sync" }, () => {
+    const state = ch.presenceState();
+    const list = [];
+    Object.keys(state).forEach(uid => {
+      const p = state[uid][0];
+      if (p) list.push({ uid, name: p.name, avatar: p.avatar, joinTs: p.joinTs });
+    });
+    list.sort((a, b) => a.joinTs - b.joinTs);
+    room.members = list;
+    room.hostId = list.length ? list[0].uid : null;
+    room.isHost = room.hostId === room.me();
+    if (room.onMembers) room.onMembers();
+  });
+  ch.subscribe(async (status) => {
+    if (status === "SUBSCRIBED") {
+      await ch.track({ name: displayName(), avatar: currentProfile ? currentProfile.avatar : "👤", joinTs: Date.now() });
+      room.joined = true;
+      if (room.onJoined) room.onJoined();
+    }
+  });
+  return room;
+}
+
+const EMOJIS = ["😀","😂","🤣","😍","😎","🤔","😭","😱","👍","🎉","❤️","🔥","🙏","🐱","🐶"];
+
+// 聊天面板：sendFn(text) 发送；返回 {el, add(who, avatar, text), addSys(text)}
+function buildChat(sendFn) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "background:var(--panel);border:2px solid var(--panel-2);border-radius:14px;padding:10px;margin-top:10px";
+  const log = document.createElement("div");
+  log.style.cssText = "height:150px;overflow-y:auto;font-size:13px;line-height:1.9;text-align:left";
+  wrap.appendChild(log);
+  const emojiRow = document.createElement("div");
+  emojiRow.style.cssText = "display:none;flex-wrap:wrap;gap:4px;margin:6px 0";
+  const input = el("input", "guess-input"); input.placeholder = "发消息…"; input.style.fontSize = "14px";
+  EMOJIS.forEach(e => {
+    const b = el("button", "btn", e); b.style.cssText = "padding:4px 6px;font-size:16px;border-radius:8px";
+    b.onclick = () => { input.value += e; input.focus(); };
+    emojiRow.appendChild(b);
+  });
+  wrap.appendChild(emojiRow);
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px;margin-top:6px";
+  const emojiBtn = el("button", "btn", "😀"); emojiBtn.style.padding = "8px 10px";
+  emojiBtn.onclick = () => { emojiRow.style.display = emojiRow.style.display === "none" ? "flex" : "none"; };
+  const sendBtn = el("button", "btn primary", "发送"); sendBtn.style.padding = "8px 14px";
+  const doSend = () => { const v = input.value.trim(); if (v) { sendFn(v); input.value = ""; } };
+  sendBtn.onclick = doSend;
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { doSend(); e.stopPropagation(); } });
+  row.appendChild(emojiBtn); row.appendChild(input); row.appendChild(sendBtn);
+  wrap.appendChild(row);
+  function add(who, avatar, text) {
+    const d = document.createElement("div");
+    d.innerHTML = "<b>" + (avatar || "") + " " + who + "：</b>" + text.replace(/</g, "&lt;");
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+  }
+  function addSys(text) {
+    const d = document.createElement("div");
+    d.style.color = "var(--text-dim)"; d.textContent = "· " + text;
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+  }
+  return { el: wrap, add, addSys };
+}
+
+// 房间大厅 UI：onStart(rm)=房主点开始；onEnter(rm,chat)=任何人进房后注册游戏事件
+function buildLobby(gameName, onStart, onEnter) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "max-width:560px;margin:10px auto;background:var(--panel);border:2px solid var(--panel-2);border-radius:20px;padding:20px";
+  let room = null, chat = null, playing = false;
+  const codeDiv = el("div"); codeDiv.style.cssText = "font-size:26px;font-weight:bold;color:var(--accent);letter-spacing:6px;margin:6px 0";
+  const memDiv = el("div"); memDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:10px 0";
+  const startBtn = el("button", "btn primary", "🎮 开始游戏"); startBtn.style.cssText = "width:100%;margin-top:8px;display:none";
+  const leaveBtn = el("button", "btn", "离开房间"); leaveBtn.style.cssText = "width:100%;margin-top:8px;display:none";
+  const msg = el("div", "hint");
+
+  function renderMembers() {
+    memDiv.innerHTML = "";
+    room.members.forEach(m => {
+      const c = document.createElement("div");
+      c.style.cssText = "background:var(--panel-2);border-radius:12px;padding:6px 12px;font-size:14px" + (m.uid === room.hostId ? ";outline:2px solid var(--accent)" : "");
+      c.textContent = m.avatar + " " + m.name + (m.uid === room.hostId ? " 👑" : "");
+      memDiv.appendChild(c);
+    });
+    startBtn.style.display = (room.isHost && !playing) ? "block" : "none";
+    leaveBtn.style.display = "block";
+    msg.textContent = room.isHost ? "你是房主 👑 人到齐了就点开始" : "等待房主开始游戏…";
+  }
+  function enter(rm) {
+    room = rm;
+    wrap.innerHTML = "";
+    wrap.appendChild(el("h3", null, "🏠 " + gameName + " · 房间号"));
+    codeDiv.textContent = rm.code; wrap.appendChild(codeDiv);
+    wrap.appendChild(el("div", "hint", "把房间号发给朋友，让他们在首页点进来输入加入"));
+    wrap.appendChild(memDiv);
+    chat = buildChat(text => {
+      const p = { who: displayName(), avatar: currentProfile ? currentProfile.avatar : "👤", text };
+      rm.send("chat", p); chat.add(p.who, p.avatar, p.text);
+    });
+    rm.on("chat", p => chat.add(p.who, p.avatar, p.text));
+    rm.onMembers = () => { renderMembers(); };
+    startBtn.onclick = () => { SFX.click(); onStart(rm, chat); };
+    leaveBtn.onclick = () => { rm.leave(); show(menuView); };
+    wrap.appendChild(startBtn); wrap.appendChild(leaveBtn);
+    wrap.appendChild(chat.el); wrap.appendChild(msg);
+    renderMembers();
+    if (onEnter) onEnter(rm, chat);
+  }
+  // 初始选择界面
+  wrap.appendChild(el("h3", null, gameName + " · 多人联机"));
+  const createBtn = el("button", "btn primary", "🏠 创建房间"); createBtn.style.cssText = "width:100%;margin:8px 0";
+  const joinRow = document.createElement("div"); joinRow.style.cssText = "display:flex;gap:6px";
+  const codeIn = el("input", "guess-input"); codeIn.placeholder = "4 位房间号"; codeIn.maxLength = 4;
+  const joinBtn = el("button", "btn mint", "加入");
+  joinRow.appendChild(codeIn); joinRow.appendChild(joinBtn);
+  wrap.appendChild(createBtn); wrap.appendChild(joinRow); wrap.appendChild(msg);
+
+  createBtn.onclick = () => {
+    if (!sb || !currentUser) { msg.textContent = "❌ 联机需要先在右上角登录"; return; }
+    const code = String(rndi(1000, 9999));
+    msg.textContent = "创建中…";
+    const rm = makeRoom(code);
+    rm.onJoined = () => enter(rm);
+  };
+  joinBtn.onclick = () => {
+    if (!sb || !currentUser) { msg.textContent = "❌ 联机需要先在右上角登录"; return; }
+    const code = codeIn.value.trim();
+    if (!/^\d{4}$/.test(code)) { msg.textContent = "请输入 4 位房间号"; return; }
+    msg.textContent = "加入中…（若无反应请确认房间号正确）";
+    const rm = makeRoom(code);
+    rm.onJoined = () => enter(rm);
+  };
+  return {
+    el: wrap,
+    getRoom: () => room,
+    getChat: () => chat,
+    setPlaying: v => { playing = v; if (room) renderMembers(); },
+    leave: () => { if (room) room.leave(); },
+  };
+}
+
+/* ================================================================
    主题系统（多颜色主题，可切换并记住）
    ================================================================ */
 const THEMES = [
@@ -559,7 +711,8 @@ const MENU = [
   { icon: "🦖", name: "恐龙跑酷",   desc: "空格 / 点击跳跃 · 纪录保存",     view: dinoView },
   { icon: "✊", name: "剪刀石头布", desc: "可选三局两胜 / 五局三胜",         view: rpsView },
   { icon: "⚫", name: "五子棋",     desc: "15×15 棋盘 · AI 攻防对战",      view: gomokuView },
-  { icon: "🎨", name: "AI 画你猜",  desc: "AI 现场作画 · 你抢答猜词",      view: guessView },
+  { icon: "🎨", name: "你画我猜",   desc: "单人AI作画 · 联机轮流画大家猜",  view: guessView },
+  { icon: "🕵️", name: "谁是卧底",   desc: "联机 · AI发词 · 聊天投票抓卧底",  view: spyView },
   { icon: "🐍", name: "贪吃蛇",     desc: SNAKE_LEVELS + " 关 · 越吃越快",   view: snakeView, lv: SNAKE_LEVELS + "关" },
   { icon: "🧩", name: "华容道",     desc: "经典滑块 · 助曹操脱困",         view: huarongView, lv: "3关" },
   { icon: "💎", name: "宝石消消乐", desc: MATCH_LEVELS + " 关目标分挑战",    view: matchView, lv: MATCH_LEVELS + "关" },
@@ -1334,153 +1487,349 @@ const GUESS_WORDS = (() => {
 })();
 
 function guessView(root) {
-  root.appendChild(backBar("🎨 AI 画你猜"));
+  root.appendChild(backBar("🎨 你画我猜"));
   const stage = el("div", "stage");
   const cv = makeCanvas(400, 400);
-  cv.style.background = "#fffdf7";
+  cv.style.background = "#fffdf7"; cv.style.touchAction = "none"; cv.style.margin = "0 auto";
   stage.appendChild(cv);
   const side = el("div", "side-panel");
-  side.appendChild(el("h3", null, "AI 正在作画…"));
-  const statEl = el("div", "row"); statEl.style.color = "var(--text-dim)";
+  side.appendChild(el("h3", null, "🎨 你画我猜"));
+  const statEl = el("div", "row"); statEl.style.cssText = "font-weight:bold;color:var(--accent)";
   side.appendChild(statEl);
-  const chat = el("div"); chat.style.cssText = "max-height:160px;overflow-y:auto;font-size:13px;line-height:1.7;color:var(--text-dim);margin:8px 0;min-height:60px";
-  side.appendChild(chat);
-  const input = el("input", "guess-input");
-  input.placeholder = "输入你猜的词";
-  side.appendChild(input);
-  const guessBtn = el("button", "btn primary", "猜！"); guessBtn.style.cssText = "width:100%;margin-top:10px";
-  const giveUpBtn = el("button", "btn", "放弃 · 看答案"); giveUpBtn.style.cssText = "width:100%;margin-top:8px";
-  const nextBtn = el("button", "btn mint", "下一题 →"); nextBtn.style.cssText = "width:100%;margin-top:8px";
-  side.appendChild(guessBtn); side.appendChild(giveUpBtn); side.appendChild(nextBtn);
+  // 作画工具（仅作画者可见）
+  const tools = el("div"); tools.style.cssText = "display:none;margin:8px 0";
+  const DCOLORS = ["#4a3b34", "#ff8d9d", "#f5b81e", "#7fd6a4", "#5ea9e9", "#a98ee6", "#8a5a3a"];
+  let brushColor = DCOLORS[0], brushW = 5;
+  DCOLORS.forEach(c => {
+    const b = el("button", "btn");
+    b.style.cssText = "width:26px;height:26px;border-radius:50%;padding:0;background:" + c + ";margin:2px";
+    b.onclick = () => { brushColor = c; SFX.click(); };
+    tools.appendChild(b);
+  });
+  const clearBtn = el("button", "btn", "🗑 清空"); clearBtn.style.cssText = "padding:4px 10px;font-size:13px;margin:2px";
+  tools.appendChild(clearBtn);
+  side.appendChild(tools);
   stage.appendChild(side);
   root.appendChild(stage);
-
-  const lobby = el("div");
-  lobby.style.cssText = "text-align:center;margin:14px auto;max-width:520px;background:var(--panel);border:2px solid var(--panel-2);border-radius:18px;padding:22px";
-  lobby.innerHTML = "<h3 style='color:var(--accent);margin-bottom:12px'>选择玩法</h3>";
-  const singleBtn = el("button", "btn primary", "🎯 单人模式"); singleBtn.style.margin = "6px";
-  const createBtn = el("button", "btn mint", "🏠 创建房间（多人）"); createBtn.style.margin = "6px";
-  const joinRow = el("div", "mode-row");
-  const codeIn = el("input", "guess-input"); codeIn.placeholder = "输入 4 位房间号"; codeIn.style.width = "160px"; codeIn.maxLength = 4;
-  const joinBtn = el("button", "btn", "加入房间");
-  joinRow.appendChild(codeIn); joinRow.appendChild(joinBtn);
-  lobby.appendChild(singleBtn); lobby.appendChild(createBtn); lobby.appendChild(joinRow);
-  const lobbyMsg = el("div", "hint"); lobby.appendChild(lobbyMsg);
-  root.insertBefore(lobby, stage);
   stage.style.display = "none";
 
   const ctx = cv.getContext("2d");
-  let item = null, step = 0, timer = null, over = false;
-  let channel = null, isHost = false, roomCode = "";
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
 
-  function addChat(text, who) {
-    const d = document.createElement("div");
-    d.innerHTML = (who ? "<b style='color:var(--accent-2)'>" + who + "：</b>" : "") + text;
-    chat.appendChild(d); chat.scrollTop = chat.scrollHeight;
-  }
+  let mode = null;           // "single" | "room"
+  let item = null, step = 0, timer = null, over = false;
+  let lobby = null, room = null, chat = null;
+  let drawerUid = null, curWord = "", usedIdx = new Set();
+
   function execOp(op) {
-    ctx.lineCap = "round";
     const [t, ...a] = op;
     if (t === "c") { ctx.beginPath(); ctx.arc(a[0], a[1], a[2], 0, Math.PI * 2); ctx.fillStyle = a[3]; ctx.fill(); }
     else if (t === "e") { ctx.beginPath(); ctx.ellipse(a[0], a[1], a[2], a[3], 0, 0, Math.PI * 2); ctx.fillStyle = a[4]; ctx.fill(); }
     else if (t === "l") { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[2], a[3]); ctx.strokeStyle = a[4]; ctx.lineWidth = a[5] || 6; ctx.stroke(); }
     else if (t === "a") { ctx.beginPath(); ctx.arc(a[0], a[1], a[2], a[3], a[4]); ctx.strokeStyle = a[5]; ctx.lineWidth = 7; ctx.stroke(); }
   }
-  function playWord(idx) {
+  function drawSeg(x1, y1, x2, y2, color, w) {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke();
+  }
+
+  /* ---------- 单人模式：AI 作画 ---------- */
+  function startSingle() {
+    mode = "single";
     clearInterval(timer); over = false; step = 0;
     ctx.clearRect(0, 0, 400, 400);
-    item = GUESS_WORDS[idx];
-    input.value = ""; input.focus();
-    statEl.textContent = "作画中… 0/" + item.ops.length;
+    item = GUESS_WORDS[rndi(0, GUESS_WORDS.length - 1)];
+    statEl.textContent = "AI 作画中… 在下方输入你的猜测！";
     timer = setInterval(() => {
       if (step < item.ops.length) {
         execOp(item.ops[step]); step++;
-        statEl.textContent = `作画中… ${step}/${item.ops.length}`;
         if (step % 3 === 0) SFX.tick();
-      } else {
-        clearInterval(timer); statEl.textContent = "画完了！这是什么？";
-      }
+      } else clearInterval(timer);
     }, 420);
   }
-  function startSingle() { lobby.style.display = "none"; stage.style.display = "flex"; playWord(rndi(0, GUESS_WORDS.length - 1)); }
-  function startHost() { playWord(rndi(0, GUESS_WORDS.length - 1)); if (channel) channel.send({ type: "broadcast", event: "start", payload: { wordIndex: GUESS_WORDS.indexOf(item) } }); }
-
-  function tryGuess() {
+  function singleGuess(v) {
     if (over || !item) return;
-    const v = input.value.trim();
-    if (!v) return;
-    const me = displayName();
-    if (channel) channel.send({ type: "broadcast", event: "guess", payload: { who: me, text: v } });
-    else judgeGuess(me, v);
-    input.value = ""; input.focus();
-  }
-  function judgeGuess(who, text) {
-    if (over || !item) return;
-    const ok = text === item.w || (item.w.length > 1 && text.includes(item.w)) || (text.length > 1 && item.w.includes(text));
+    const ok = v === item.w || (item.w.length > 1 && v.includes(item.w)) || (v.length > 1 && item.w.includes(v));
     if (ok) {
       over = true; clearInterval(timer);
       while (step < item.ops.length) execOp(item.ops[step++]);
       SFX.win();
-      addChat("🎉 <b style='color:var(--accent)'>" + who + "</b> 猜对了！答案是「" + item.w + "」");
-      showModal("🎉 " + who + " 猜对了！", ["答案：<b style='color:var(--accent)'>" + item.w + "</b>"],
-        [{ label: "下一题", primary: true, onClick: isHost ? startHost : () => addChat("等待房主开始下一题…") },
+      showModal("🎉 猜对了！", ["答案就是：<b style='color:var(--accent)'>" + item.w + "</b>"],
+        [{ label: "下一题", primary: true, onClick: startSingle },
          { label: "返回主菜单", onClick: () => show(menuView) }]);
-    } else {
-      SFX.error();
-      addChat("「" + text + "」不对～", who);
+    } else { SFX.error(); statEl.textContent = "「" + v + "」不对，再想想～"; }
+  }
+
+  /* ---------- 联机模式：真人轮流作画 ---------- */
+  function pickWord() {
+    if (usedIdx.size >= GUESS_WORDS.length) usedIdx = new Set();
+    let i; do { i = rndi(0, GUESS_WORDS.length - 1); } while (usedIdx.has(i));
+    usedIdx.add(i); return i;
+  }
+  function hostStartRound() {
+    const members = room.members;
+    if (!members.length) return;
+    const idx = members.findIndex(m => m.uid === drawerUid);
+    const next = members[(idx + 1) % members.length];
+    const p = { drawer: next.uid, drawerName: next.name, word: GUESS_WORDS[pickWord()].w };
+    room.send("round", p); onRound(p);
+  }
+  function onRound(p) {
+    over = false; drawerUid = p.drawer; curWord = p.word;
+    ctx.clearRect(0, 0, 400, 400);
+    const meDrawer = room.me() === drawerUid;
+    tools.style.display = meDrawer ? "block" : "none";
+    statEl.textContent = meDrawer ? ("✏️ 你画这个词：「" + curWord + "」（别说出来哦）") : ("🖌 " + p.drawerName + " 正在作画，在聊天框抢答！");
+    if (chat) chat.addSys("新一轮开始，轮到 " + p.drawerName + " 作画");
+  }
+  function onGuess(p) {
+    if (chat) chat.add(p.who, p.avatar, p.text);
+    if (over || !curWord) return;
+    const ok = p.text === curWord || (curWord.length > 1 && p.text.includes(curWord)) || (p.text.length > 1 && curWord.includes(p.text));
+    if (ok) {
+      over = true; SFX.win();
+      const w = { who: p.who, word: curWord };
+      room.send("win", w); onWin(w);
     }
   }
-  guessBtn.onclick = tryGuess;
-  const keyH = (e) => { if (e.key === "Enter") tryGuess(); if (e.key === "Escape") { leaveRoom(); show(menuView); } };
-  window.addEventListener("keydown", keyH);
-  giveUpBtn.onclick = () => {
-    if (over) return;
+  function onWin(p) {
+    over = true;
+    showModal("🎉 " + p.who + " 猜对了！", ["答案：<b style='color:var(--accent)'>" + p.word + "</b>"],
+      (room && room.isHost)
+        ? [{ label: "下一轮（换下一位画）", primary: true, onClick: hostStartRound },
+           { label: "返回主菜单", onClick: () => show(menuView) }]
+        : [{ label: "等房主开下一轮", primary: true, onClick: () => {} },
+           { label: "返回主菜单", onClick: () => show(menuView) }]);
+  }
+  // 画笔画布事件（仅作画者生效）
+  let drawing = false, lastP = null;
+  function posOf(e) {
+    const r = cv.getBoundingClientRect();
+    return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+  }
+  cv.addEventListener("pointerdown", e => {
+    if (mode !== "room" || over || !room || room.me() !== drawerUid) return;
+    drawing = true; lastP = posOf(e);
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!drawing) return;
+    const p = posOf(e);
+    drawSeg(lastP[0], lastP[1], p[0], p[1], brushColor, brushW);
+    room.send("stroke", { x1: lastP[0], y1: lastP[1], x2: p[0], y2: p[1], c: brushColor, w: brushW });
+    lastP = p;
+  });
+  const stopDraw = () => { drawing = false; };
+  cv.addEventListener("pointerup", stopDraw);
+  cv.addEventListener("pointercancel", stopDraw);
+  clearBtn.onclick = () => {
+    if (room && room.me() === drawerUid) { ctx.clearRect(0, 0, 400, 400); room.send("clear", {}); }
+  };
+
+  function bindRoom(rm, cht) {
+    room = rm; chat = cht;
+    rm.on("begin", () => { mode = "room"; stage.style.display = "flex"; if (lobby) lobby.setPlaying(true); });
+    rm.on("round", onRound);
+    rm.on("guess", onGuess);
+    rm.on("win", onWin);
+    rm.on("stroke", p => drawSeg(p.x1, p.y1, p.x2, p.y2, p.c, p.w));
+    rm.on("clear", () => ctx.clearRect(0, 0, 400, 400));
+  }
+
+  // 入口选择：单人 / 联机大厅
+  const gate = el("div");
+  gate.style.cssText = "text-align:center;margin:14px auto;max-width:520px";
+  const singleBtn = el("button", "btn primary", "🎯 单人：AI 画我来猜"); singleBtn.style.cssText = "width:100%;margin-bottom:8px";
+  const multiBtn = el("button", "btn mint", "👥 多人联机：轮流画大家猜"); multiBtn.style.cssText = "width:100%";
+  gate.appendChild(singleBtn); gate.appendChild(multiBtn);
+  root.appendChild(gate);
+
+  singleBtn.onclick = () => { SFX.click(); gate.style.display = "none"; stage.style.display = "flex"; startSingle(); };
+  multiBtn.onclick = () => {
+    SFX.click();
+    if (!sb || !currentUser) { showModal("提示", ["多人联机需要先在右上角 👤 登录"], [{ label: "知道了", primary: true }]); return; }
+    gate.style.display = "none";
+    lobby = buildLobby("你画我猜",
+      rm => { rm.send("begin", {}); mode = "room"; stage.style.display = "flex"; hostStartRound(); },
+      (rm, cht) => bindRoom(rm, cht));
+    root.appendChild(lobby.el);
+  };
+
+  // 单人模式的猜词输入框
+  const singleBox = el("div");
+  singleBox.style.cssText = "max-width:480px;margin:12px auto 0;display:none";
+  const input = el("input", "guess-input"); input.placeholder = "AI 画的是…？输入后回车";
+  const row = el("div", "mode-row");
+  const guessBtn = el("button", "btn primary", "猜！"); guessBtn.style.flex = "1";
+  const giveupBtn = el("button", "btn", "🙈 放弃看答案");
+  row.appendChild(guessBtn); row.appendChild(giveupBtn);
+  singleBox.appendChild(input); singleBox.appendChild(row);
+  root.appendChild(singleBox);
+  const showSingleBox = () => { singleBox.style.display = "block"; };
+  const _origSingleClick = singleBtn.onclick;
+  singleBtn.onclick = () => { _origSingleClick(); showSingleBox(); };
+  const doSingleGuess = () => { const v = input.value.trim(); if (v) singleGuess(v); input.value = ""; input.focus(); };
+  guessBtn.onclick = doSingleGuess;
+  input.addEventListener("keydown", e => { if (e.key === "Enter") doSingleGuess(); e.stopPropagation(); });
+  giveupBtn.onclick = () => {
+    if (over || !item) return;
     over = true; clearInterval(timer);
     while (step < item.ops.length) execOp(item.ops[step++]);
-    SFX.lose();
-    addChat("答案是「" + item.w + "」");
-    showModal("🙈 揭晓答案", ["AI 画的是：<b style='color:var(--accent)'>" + item.w + "</b>"],
-      [{ label: "下一题", primary: true, onClick: isHost ? startHost : () => addChat("等待房主开始下一题…") },
+    showModal("🙈 揭晓答案", ["这题是：<b style='color:var(--accent)'>" + item.w + "</b>"],
+      [{ label: "下一题", primary: true, onClick: startSingle },
        { label: "返回主菜单", onClick: () => show(menuView) }]);
   };
-  nextBtn.onclick = isHost ? startHost : () => addChat("等待房主开始下一题…");
 
-  singleBtn.onclick = startSingle;
-  createBtn.onclick = () => {
-    if (!sb || !currentUser) { lobbyMsg.textContent = "❌ 多人联机需要先登录（右上角）"; return; }
-    roomCode = String(rndi(1000, 9999));
-    lobbyMsg.innerHTML = "✅ 房间号：<b style='color:var(--accent);font-size:22px'>" + roomCode + "</b><br>把房间号发给朋友，让他们输入加入";
-    isHost = true;
-    joinChannel(roomCode, true);
-    lobby.style.display = "none"; stage.style.display = "flex";
-    addChat("你是房主，点「下一题」开始出题");
-  };
-  joinBtn.onclick = () => {
-    if (!sb || !currentUser) { lobbyMsg.textContent = "❌ 多人联机需要先登录（右上角）"; return; }
-    const code = codeIn.value.trim();
-    if (!/^\d{4}$/.test(code)) { lobbyMsg.textContent = "请输入 4 位房间号"; return; }
-    roomCode = code; isHost = false;
-    lobbyMsg.textContent = "加入中…";
-    joinChannel(code, false);
-  };
+  const keyH = e => { if (e.key === "Escape") show(menuView); };
+  window.addEventListener("keydown", keyH);
+  return () => { clearInterval(timer); window.removeEventListener("keydown", keyH); if (room) room.leave(); };
+}
 
-  function joinChannel(code, host) {
-    channel = sb.channel("guess:" + code);
-    channel.on("broadcast", { event: "start" }, ({ payload }) => {
-      lobby.style.display = "none"; stage.style.display = "flex";
-      playWord(payload.wordIndex);
-      chat.innerHTML = ""; addChat("新一题开始，AI 正在作画…");
-    });
-    channel.on("broadcast", { event: "guess" }, ({ payload }) => {
-      judgeGuess(payload.who, payload.text);
-    });
-    channel.subscribe();
+/* ================================================================
+   5.5 谁是卧底（多人联机 · AI 发词 · 讨论投票）
+   ================================================================ */
+const SPY_PAIRS = [
+  ["牛奶", "豆浆"], ["苹果", "梨"], ["香蕉", "芭蕉"], ["橙子", "橘子"], ["西瓜", "哈密瓜"],
+  ["面包", "馒头"], ["米饭", "面条"], ["咖啡", "奶茶"], ["可乐", "雪碧"], ["火锅", "麻辣烫"],
+  ["饺子", "馄饨"], ["包子", "烧麦"], ["自行车", "电动车"], ["汽车", "公交车"], ["飞机", "火箭"],
+  ["火车", "高铁"], ["猫", "老虎"], ["狗", "狼"], ["兔子", "仓鼠"], ["狮子", "豹子"],
+  ["铅笔", "钢笔"], ["橡皮", "涂改液"], ["书包", "背包"], ["眼镜", "墨镜"], ["手表", "闹钟"],
+  ["手机", "平板"], ["电视", "投影仪"], ["冰箱", "空调"], ["风扇", "蒲扇"], ["雨伞", "雨衣"],
+  ["帽子", "围巾"], ["口红", "唇膏"], ["镜子", "梳子"], ["床", "沙发"], ["桌子", "椅子"],
+  ["老师", "教授"], ["医生", "护士"], ["警察", "保安"], ["歌手", "演员"], ["画家", "摄影师"],
+  ["作家", "诗人"], ["篮球", "足球"], ["游泳", "跳水"], ["跑步", "竞走"], ["爬山", "徒步"],
+  ["小说", "漫画"], ["电影", "电视剧"], ["蜜蜂", "蝴蝶"], ["海豚", "鲸鱼"], ["玫瑰", "月季"],
+];
+
+function spyView(root) {
+  root.appendChild(backBar("🕵️ 谁是卧底"));
+  if (!sb || !currentUser) {
+    root.appendChild(el("div", "hint", "🕵️ 谁是卧底是多人联机游戏，需要先在右上角 👤 登录"));
   }
-  function leaveRoom() {
-    if (channel) { try { sb.removeChannel(channel); } catch (e) {} channel = null; }
-  }
+  // 游戏面板（开局后显示）
+  const panel = el("div");
+  panel.style.cssText = "max-width:560px;margin:12px auto;background:var(--panel);border:2px solid var(--panel-2);border-radius:20px;padding:18px;display:none";
+  const wordCard = el("div");
+  wordCard.style.cssText = "font-size:28px;font-weight:bold;color:var(--accent);background:var(--panel-2);border:2px dashed var(--accent);border-radius:16px;padding:16px;margin:8px 0";
+  const phaseEl = el("div", "hint");
+  const voteDiv = el("div"); voteDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:10px 0";
+  const hostRow = el("div"); hostRow.style.cssText = "display:flex;gap:8px;justify-content:center;margin-top:8px";
+  const voteBtn = el("button", "btn primary", "🗳️ 开始投票"); voteBtn.style.display = "none";
+  const againBtn = el("button", "btn mint", "🔁 再来一局"); againBtn.style.display = "none";
+  hostRow.appendChild(voteBtn); hostRow.appendChild(againBtn);
+  panel.appendChild(el("h3", null, "🕵️ 谁是卧底"));
+  panel.appendChild(wordCard); panel.appendChild(phaseEl); panel.appendChild(voteDiv); panel.appendChild(hostRow);
+  root.appendChild(panel);
 
-  return () => { clearInterval(timer); window.removeEventListener("keydown", keyH); leaveRoom(); };
+  let lobby = null, room = null, chat = null;
+  let myWord = "", civWord = "", spyWord = "", spyUid = null, phase = "lobby";
+  let votes = {}, usedPairs = new Set(), voted = false;
+
+  function pickPair() {
+    if (usedPairs.size >= SPY_PAIRS.length) usedPairs = new Set();
+    let i; do { i = rndi(0, SPY_PAIRS.length - 1); } while (usedPairs.has(i));
+    usedPairs.add(i); return SPY_PAIRS[i];
+  }
+  function hostDeal() {
+    const members = room.members;
+    if (members.length < 3) { showModal("提示", ["谁是卧底至少 3 人开局，再等等朋友吧～"], [{ label: "好的", primary: true }]); return; }
+    const pair = pickPair();
+    const flip = rndi(0, 1) === 1;
+    civWord = pair[flip ? 0 : 1]; spyWord = pair[flip ? 1 : 0];
+    const spy = members[rndi(0, members.length - 1)];
+    spyUid = spy.uid; votes = {};
+    room.send("begin", { spyUid, civWord, spyWord });
+    members.forEach(m => {
+      const w = m.uid === spyUid ? spyWord : civWord;
+      room.send("role", { to: m.uid, word: w });
+      if (m.uid === room.me()) myWord = w;
+    });
+    phase = "describe"; voted = false;
+    showGame("describe");
+    if (chat) chat.addSys("新一局开始！词语已悄悄发给每个人");
+  }
+  function showGame(ph) {
+    phase = ph;
+    panel.style.display = "block";
+    if (lobby) lobby.setPlaying(true);
+    voteDiv.innerHTML = "";
+    voteBtn.style.display = "none"; againBtn.style.display = "none";
+    if (ph === "describe") {
+      wordCard.textContent = "你的词：「" + myWord + "」";
+      phaseEl.textContent = "💬 描述阶段：在下方聊天框描述你的词（别说原词！），卧底要装成平民";
+      if (room.isHost) voteBtn.style.display = "inline-block";
+    } else if (ph === "vote") {
+      phaseEl.textContent = "🗳️ 投票阶段：点你觉得最像卧底的人";
+      voted = false;
+      room.members.forEach(m => {
+        if (m.uid === room.me()) return;
+        const b = el("button", "btn", m.avatar + " " + m.name);
+        b.onclick = () => {
+          if (voted) return;
+          voted = true; SFX.click();
+          const p = { from: room.me(), target: m.uid };
+          room.send("vote", p); recordVote(p);
+          voteDiv.querySelectorAll("button").forEach(x => x.disabled = true);
+          phaseEl.textContent = "已投给 " + m.name + "，等待其他人…";
+        };
+        voteDiv.appendChild(b);
+      });
+    }
+  }
+  function recordVote(p) {
+    if (!room.isHost) return;
+    votes[p.from] = p.target;
+    const total = Object.keys(votes).length;
+    if (chat) chat.addSys("已收 " + total + "/" + room.members.length + " 票");
+    if (total >= room.members.length) {
+      const count = {};
+      Object.values(votes).forEach(t => { count[t] = (count[t] || 0) + 1; });
+      let maxT = null, maxC = -1;
+      Object.keys(count).forEach(t => { if (count[t] > maxC) { maxC = count[t]; maxT = t; } });
+      const r = { spyUid, out: maxT, civWord, spyWord, spyCaught: maxT === spyUid };
+      room.send("result", r); onResult(r);
+    }
+  }
+  function nameOf(uid) {
+    const m = room.members.find(x => x.uid === uid);
+    return m ? m.avatar + " " + m.name : "神秘人";
+  }
+  function onResult(r) {
+    const caughtTxt = r.spyCaught ? "✅ 卧底被抓住了！平民胜利 🎉" : "❌ 抓错人啦！卧底胜利 🕵️";
+    showModal("🕵️ 揭晓时刻", [
+      "卧底是：" + nameOf(r.spyUid),
+      "被投出：" + (r.out ? nameOf(r.out) : "无人"),
+      "平民词：「" + r.civWord + "」 vs 卧底词：「" + r.spyWord + "」",
+      caughtTxt,
+    ], room.isHost
+      ? [{ label: "🔁 再来一局", primary: true, onClick: hostDeal },
+         { label: "返回主菜单", onClick: () => show(menuView) }]
+      : [{ label: "等房主开新局", primary: true, onClick: () => {} },
+         { label: "返回主菜单", onClick: () => show(menuView) }]);
+    if (r.spyCaught) SFX.win(); else SFX.lose();
+    if (room.isHost) againBtn.style.display = "inline-block";
+    phaseEl.textContent = "本局结束";
+    voteDiv.innerHTML = "";
+  }
+  function bindSpy(rm, cht) {
+    room = rm; chat = cht;
+    rm.on("begin", () => { votes = {}; voted = false; phase = "describe"; panel.style.display = "block"; });
+    rm.on("role", p => { if (p.to === room.me()) { myWord = p.word; showGame("describe"); } });
+    rm.on("voteStart", () => showGame("vote"));
+    rm.on("vote", recordVote);
+    rm.on("result", onResult);
+  }
+  voteBtn.onclick = () => { room.send("voteStart", {}); showGame("vote"); };
+  againBtn.onclick = hostDeal;
+
+  lobby = buildLobby("谁是卧底",
+    rm => { hostDeal(); },
+    (rm, cht) => bindSpy(rm, cht));
+  root.appendChild(lobby.el);
+
+  const keyH = e => { if (e.key === "Escape") show(menuView); };
+  window.addEventListener("keydown", keyH);
+  return () => { window.removeEventListener("keydown", keyH); if (room) room.leave(); };
 }
 
 /* ================================================================
