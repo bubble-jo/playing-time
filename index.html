@@ -1620,12 +1620,9 @@ function guessView(root) {
   }
   function onWin(p) {
     over = true;
-    showModal("🎉 " + p.who + " 猜对了！", ["答案：<b style='color:var(--accent)'>" + p.word + "</b>"],
-      (room && room.isHost)
-        ? [{ label: "下一轮（换下一位画）", primary: true, onClick: hostStartRound },
-           { label: "返回主菜单", onClick: () => show(menuView) }]
-        : [{ label: "等房主开下一轮", primary: true, onClick: () => {} },
-           { label: "返回主菜单", onClick: () => show(menuView) }]);
+    SFX.win();
+    if (chat) chat.add("🤖 AI 主持人", "", "🎉 恭喜 " + p.who + " 猜对了！答案是「" + p.word + "」，3 秒后换下一位作画～");
+    if (room && room.isHost) setTimeout(() => { if (room) hostStartRound(); }, 3000);
   }
   // 画笔画布事件（仅作画者生效）
   let drawing = false, lastP = null;
