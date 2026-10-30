@@ -333,7 +333,7 @@ authBtn.onclick = () => {
       "<div style='font-size:13px;color:var(--text-dim)'>" + (currentUser.email || "") + "</div>";
     box.appendChild(av); box.appendChild(info);
     showModal("我的账号", [box],
-      [{ label: "修改资料", primary: true, onClick: () => showProfileModal() },
+      [{ label: "修改资料", primary: true, onClick: () => { showProfileModal(); return false; } },
        { label: "退出登录", onClick: async () => { await sb.auth.signOut(); currentProfile = null; } },
        { label: "关闭" }]);
   } else {
