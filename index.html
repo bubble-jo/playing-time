@@ -1621,13 +1621,22 @@ function guessView(root) {
   // 作画工具（仅作画者可见）
   const tools = el("div"); tools.style.cssText = "display:none;margin:8px 0";
   const DCOLORS = ["#4a3b34", "#ff8d9d", "#f5b81e", "#7fd6a4", "#5ea9e9", "#a98ee6", "#8a5a3a"];
-  let brushColor = DCOLORS[0], brushW = 5;
+  let brushColor = DCOLORS[0], brushW = 5, erasing = false;
+  const colorBtns = [];
+  const eraserBtn = el("button", "btn", "🧽"); eraserBtn.title = "橡皮擦"; eraserBtn.style.cssText = "padding:2px 7px;font-size:15px;margin:2px";
+  function markBrush() {
+    colorBtns.forEach(x => { x.b.style.outline = (x.c === brushColor && !erasing) ? "3px solid var(--accent)" : "none"; });
+    eraserBtn.style.outline = erasing ? "3px solid var(--accent)" : "none";
+  }
   DCOLORS.forEach(c => {
     const b = el("button", "btn");
     b.style.cssText = "width:26px;height:26px;border-radius:50%;padding:0;background:" + c + ";margin:2px";
-    b.onclick = () => { brushColor = c; SFX.click(); };
+    b.onclick = () => { brushColor = c; erasing = false; markBrush(); SFX.click(); };
+    colorBtns.push({ b, c });
     tools.appendChild(b);
   });
+  eraserBtn.onclick = () => { erasing = true; markBrush(); SFX.click(); };
+  tools.appendChild(eraserBtn);
   const clearBtn = el("button", "btn", "🗑 清空"); clearBtn.style.cssText = "padding:4px 10px;font-size:13px;margin:2px";
   tools.appendChild(clearBtn);
   side.appendChild(tools);
@@ -1651,8 +1660,11 @@ function guessView(root) {
     else if (t === "a") { ctx.beginPath(); ctx.arc(a[0], a[1], a[2], a[3], a[4]); ctx.strokeStyle = a[5]; ctx.lineWidth = 7; ctx.stroke(); }
   }
   function drawSeg(x1, y1, x2, y2, color, w) {
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-    ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke();
+    ctx.save();
+    if (color === "erase") { ctx.globalCompositeOperation = "destination-out"; ctx.lineWidth = w * 3; }
+    else { ctx.strokeStyle = color; ctx.lineWidth = w; }
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.restore();
   }
 
   /* ---------- 单人模式：AI 作画 ---------- */
@@ -1758,7 +1770,7 @@ function guessView(root) {
   cv.addEventListener("pointermove", e => {
     if (!drawing) return;
     const p = posOf(e);
-    const s = { x1: lastP[0], y1: lastP[1], x2: p[0], y2: p[1], c: brushColor, w: brushW };
+    const s = { x1: lastP[0], y1: lastP[1], x2: p[0], y2: p[1], c: erasing ? "erase" : brushColor, w: brushW };
     drawSeg(s.x1, s.y1, s.x2, s.y2, s.c, s.w);
     strokeList.push(s); redoStrokes = [];
     room.send("stroke", s);
