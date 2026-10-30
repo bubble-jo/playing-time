@@ -104,7 +104,15 @@
   .btn.sel { outline: 3px solid var(--accent-2); }
 
   .stage { display: flex; gap: 24px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
-  canvas { background: var(--panel); border-radius: 16px; display: block; box-shadow: 0 6px 18px rgba(214,180,140,.3); }
+  canvas { background: var(--panel); border-radius: 16px; display: block; box-shadow: 0 6px 18px rgba(214,180,140,.3); max-width: 100%; height: auto; }
+  @media (max-width: 640px) {
+    .cute-title { font-size: 30px; letter-spacing: 2px; }
+    #app { padding: 12px 8px 50px; }
+    .topbar { flex-wrap: wrap; gap: 8px; }
+    .game-title { font-size: 19px; }
+    .dpad { grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); }
+    .side-panel { width: 100%; }
+  }
   .side-panel {
     background: var(--panel); border: 2px solid var(--panel-2); border-radius: 18px;
     padding: 18px; min-width: 230px; box-shadow: 0 6px 18px rgba(214,180,140,.25);
@@ -713,6 +721,11 @@ function el(tag, cls, text) {
   if (cls) e.className = cls;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+function evXY(e, cv) {
+  // 把鼠标/触摸坐标换算成画布内部坐标（手机端画布被 CSS 缩放时也能点对）
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
 }
 function backBar(title, mapCfg) {
   const bar = el("div", "topbar");
@@ -1523,9 +1536,9 @@ function gomokuView(root) {
   }
   cv.addEventListener("mousedown", (e) => {
     if (gameOver || thinking) return;
-    const rect = cv.getBoundingClientRect();
-    const c = Math.round((e.clientX - rect.left - PAD) / CELL);
-    const r = Math.round((e.clientY - rect.top - PAD) / CELL);
+    const [px, py] = evXY(e, cv);
+    const c = Math.round((px - PAD) / CELL);
+    const r = Math.round((py - PAD) / CELL);
     if (!inB(r, c) || board[r][c]) return;
     board[r][c] = 1; SFX.place(); draw();
     if (checkWin(r, c, 1)) {
@@ -2326,9 +2339,9 @@ function huarongView(root) {
     stage.insertBefore(cv, side);
     ctx = cv.getContext("2d");
     cv.onclick = (e) => {
-      const rect = cv.getBoundingClientRect();
-      const c = Math.floor((e.clientX - rect.left) / CELL);
-      const r = Math.floor((e.clientY - rect.top) / CELL);
+      const [px, py] = evXY(e, cv);
+      const c = Math.floor(px / CELL);
+      const r = Math.floor(py / CELL);
       digitMove(r * digN + c);
       updSide();
     };
@@ -2419,16 +2432,16 @@ function huarongView(root) {
       : "点击空格旁的数字方块让它滑入空位。把 1~15 按顺序排好即过关！";
     cv.onclick = m === "digit"
       ? (e) => {
-          const rect = cv.getBoundingClientRect();
-          const c = Math.floor((e.clientX - rect.left) / CELL);
-          const r = Math.floor((e.clientY - rect.top) / CELL);
+          const [px, py] = evXY(e, cv);
+          const c = Math.floor(px / CELL);
+          const r = Math.floor(py / CELL);
           digitMove(r * 4 + c);
           updSide();
         }
       : (e) => {
-          const rect = cv.getBoundingClientRect();
-          const c = Math.floor((e.clientX - rect.left) / CELL);
-          const r = Math.floor((e.clientY - rect.top) / CELL);
+          const [px, py] = evXY(e, cv);
+          const c = Math.floor(px / CELL);
+          const r = Math.floor(py / CELL);
           sel = pieces.find(p => r >= p.r && r < p.r + p.h && c >= p.c && c < p.c + p.w) || null;
           SFX.click(); drawSanguo();
         };
@@ -2570,9 +2583,9 @@ function matchView(root) {
   }
   cv.addEventListener("mousedown", async (e) => {
     if (busy || passed) return;
-    const rect = cv.getBoundingClientRect();
-    const c = Math.floor((e.clientX - rect.left) / CELL);
-    const r = Math.floor((e.clientY - rect.top) / CELL);
+    const [px, py] = evXY(e, cv);
+    const c = Math.floor(px / CELL);
+    const r = Math.floor(py / CELL);
     if (r < 0 || c < 0 || r >= N || c >= N) return;
     if (!sel) { sel = [r, c]; SFX.click(); draw(); return; }
     if (sel[0] === r && sel[1] === c) { sel = null; draw(); return; }
@@ -2756,9 +2769,9 @@ function sudokuView(root) {
   clr.onclick = () => input(0);
   pad.appendChild(clr);
   cv.addEventListener("mousedown", (e) => {
-    const rect = cv.getBoundingClientRect();
-    const c = Math.floor((e.clientX - rect.left) / CELL);
-    const r = Math.floor((e.clientY - rect.top) / CELL);
+    const [px, py] = evXY(e, cv);
+    const c = Math.floor(px / CELL);
+    const r = Math.floor(py / CELL);
     if (r >= 0 && c >= 0 && r < 9 && c < 9) { sel = [r, c]; SFX.click(); draw(); }
   });
   const keyH = (e) => {
@@ -2899,14 +2912,14 @@ function planesView(root) {
     hintEl.textContent = "移动鼠标预览，点击棋盘放置机头 · 放满 " + PLANE_COUNT + " 架后开战";
 
     placeCv.addEventListener("mousemove", (e) => {
-      const rect = placeCv.getBoundingClientRect();
-      hoverCell = [Math.floor((e.clientY - rect.top) / CELL), Math.floor((e.clientX - rect.left) / CELL)];
+      const [px, py] = evXY(e, placeCv);
+      hoverCell = [Math.floor(py / CELL), Math.floor(px / CELL)];
       drawPlace();
     });
     placeCv.addEventListener("mouseleave", () => { hoverCell = null; drawPlace(); });
     placeCv.addEventListener("mousedown", (e) => {
-      const rect = placeCv.getBoundingClientRect();
-      const r = Math.floor((e.clientY - rect.top) / CELL), c = Math.floor((e.clientX - rect.left) / CELL);
+      const [px, py] = evXY(e, placeCv);
+      const r = Math.floor(py / CELL), c = Math.floor(px / CELL);
       if (myPlanes.length >= PLANE_COUNT) { SFX.error(); return; }
       if (canPlace(myPlanes, r, c, placeDir)) {
         myPlanes.push(makePlane(r, c, placeDir)); SFX.place(); renderPlace();
@@ -2969,8 +2982,8 @@ function planesView(root) {
 
     aiCv.addEventListener("mousedown", (e) => {
       if (phase !== "battle" || turn !== "player" || busyAI) return;
-      const rect = aiCv.getBoundingClientRect();
-      const r = Math.floor((e.clientY - rect.top) / CELL), c = Math.floor((e.clientX - rect.left) / CELL);
+      const [px, py] = evXY(e, aiCv);
+      const r = Math.floor(py / CELL), c = Math.floor(px / CELL);
       if (r < 0 || c < 0 || r >= PLANE_BOARD || c >= PLANE_BOARD) return;
       const key = r + "," + c;
       if (myShots.has(key)) return;
