@@ -273,14 +273,23 @@ function cloudPushProgress() {
   const p = getProgress();
   sb.from("progress").upsert({
     user_id: currentUser.id,
-    snake: p.snake || 1, match: p.match || 1, sudoku: p.sudoku || 1, huarong: p.huarong || 1, digit: p.digit || 1,
+    snake: p.snake || 1, match: p.match || 1, sudoku: p.sudoku || 1, huarong: p.huarong || 1, digit: p.digit || 1, brain: p.brain || 1,
     updated_at: new Date().toISOString()
   }, { onConflict: "user_id" });
 }
 async function cloudPullProgress() {
   if (!sb || !currentUser) return;
   const { data } = await sb.from("progress").select("*").eq("user_id", currentUser.id).maybeSingle();
-  if (data) setProgress({ snake: data.snake, match: data.match, sudoku: data.sudoku, huarong: data.huarong, digit: data.digit });
+  if (data) {
+    // 合并取最大：本地比云端还高的进度不会被覆盖，然后再推回云端
+    const p = getProgress();
+    const merged = {};
+    ["snake", "match", "sudoku", "huarong", "digit", "brain"].forEach(k => {
+      merged[k] = Math.max(p[k] || 1, data[k] || 1);
+    });
+    setProgress(merged);
+    cloudPushProgress();
+  } else cloudPushProgress();
 }
 function cloudPushPet() {
   if (!sb || !currentUser) return;
@@ -290,7 +299,14 @@ function cloudPushPet() {
 async function cloudPullPet() {
   if (!sb || !currentUser) return;
   const { data } = await sb.from("pet").select("*").eq("user_id", currentUser.id).maybeSingle();
-  if (data) saveCat({ name: data.name, species: data.species || "cat", hunger: data.hunger, mood: data.mood, clean: data.clean, lastTs: new Date(data.last_ts).getTime() });
+  if (data) {
+    // 哪边最后更新时间新就用哪边，避免旧设备覆盖新状态
+    const local = loadCat();
+    const cloudTs = new Date(data.last_ts).getTime();
+    if (!local || cloudTs >= (local.lastTs || 0)) {
+      saveCat({ name: data.name, species: data.species || "cat", hunger: data.hunger, mood: data.mood, clean: data.clean, lastTs: cloudTs });
+    } else cloudPushPet();
+  } else cloudPushPet();
 }
 function cloudPushToys() {
   if (!sb || !currentUser) return;
@@ -300,7 +316,13 @@ function cloudPushToys() {
 async function cloudPullToys() {
   if (!sb || !currentUser) return;
   const { data } = await sb.from("toys").select("toy_id").eq("user_id", currentUser.id);
-  if (data) localStorage.setItem("pt_toys", JSON.stringify(data.map(r => r.toy_id)));
+  if (data) {
+    // 并集合并：本地有的不丢，云端有的补上
+    const set = new Set(getUnlockedToys());
+    data.forEach(r => set.add(r.toy_id));
+    localStorage.setItem("pt_toys", JSON.stringify([...set]));
+    cloudPushToys();
+  } else cloudPushToys();
 }
 
 /* ---- 个人资料：昵称 + 头像 ---- */
@@ -631,6 +653,7 @@ function saveLevel(gameId, level) {
   // 只增不减：回玩旧关不会覆盖最高进度
   const cur = getProgress()[gameId] || 1;
   setProgress({ [gameId]: Math.max(level, cur) });
+  cloudPushProgress();   // 同步到云端，手机/电脑进度一致
 }
 
 // 闯关解锁的道具：type 玩具=给它玩(心情+15) / 食物=喂它吃(饱腹+15)
@@ -673,7 +696,7 @@ function checkToyUnlocks() {
     const [g, lv] = Object.entries(toy.need)[0];
     if ((prog[g] || 1) >= lv) { owned.push(toy.id); newly.push(toy); }
   }
-  if (newly.length) localStorage.setItem("pt_toys", JSON.stringify(owned));
+  if (newly.length) { localStorage.setItem("pt_toys", JSON.stringify(owned)); cloudPushToys(); }
   return newly;
 }
 
@@ -802,7 +825,9 @@ const MENU = [
   { icon: "🧩", name: "华容道",     desc: "经典滑块 · 助曹操脱困",         view: huarongView, lv: "3关" },
   { icon: "💎", name: "宝石消消乐", desc: MATCH_LEVELS + " 关目标分挑战",    view: matchView, lv: MATCH_LEVELS + "关" },
   { icon: "🔢", name: "数独",       desc: SUDOKU_LEVELS + " 关难度递进",     view: sudokuView, lv: SUDOKU_LEVELS + "关" },
-  { icon: "✈️", name: "寻机头",     desc: "隐藏飞机 · 与 AI 互炸找机头",    view: planesView },
+  { icon: "✈️", name: "寻机头",     desc: "人机互炸 · 联机和好友对战",      view: planesView },
+  { icon: "🧠", name: "脑力侦探",   desc: "智力谜题闯关 · 烧脑又有趣",      view: brainView, lv: "15关" },
+  { icon: "🍲", name: "海龟汤",     desc: "情境推理 · 喝汤猜汤底",          view: soupView },
 ];
 
 function menuView(root) {
@@ -836,7 +861,7 @@ function catCleanup() { clearInterval(catTimer); catTimer = null; cancelAnimatio
 function loadCat() {
   try { return JSON.parse(localStorage.getItem("pt_cat")); } catch (e) { return null; }
 }
-function saveCat(c) { localStorage.setItem("pt_cat", JSON.stringify(c)); }
+function saveCat(c) { localStorage.setItem("pt_cat", JSON.stringify(c)); cloudPushPet(); }
 
 // 可领养的小动物种类
 const PET_TYPES = [
@@ -2824,6 +2849,189 @@ function sudokuView(root) {
 }
 
 /* ================================================================
+   11. 脑力侦探（15 关智力谜题）
+   ================================================================ */
+const BRAIN_LEVELS = [
+  { q: "找规律：2、4、8、16、？", o: ["18", "24", "32", "20"], a: 2, e: "每个数都是前一个的 2 倍，16×2=32。" },
+  { q: "找规律：1、1、2、3、5、8、？", o: ["11", "13", "12", "10"], a: 1, e: "斐波那契数列：前两个数相加等于后一个，5+8=13。" },
+  { q: "排队时小明前面有 3 人、后面有 4 人，这一队共几人？", o: ["7 人", "8 人", "9 人", "6 人"], a: 1, e: "3+4+小明自己 = 8 人。" },
+  { q: "什么东西越洗越脏？", o: ["衣服", "水", "抹布", "肥皂"], a: 1, e: "水洗东西的时候，脏东西都跑到水里啦。" },
+  { q: "一只青蛙掉进 10 米深的井，白天爬 3 米、晚上滑下 2 米，第几天能爬出去？", o: ["10 天", "7 天", "8 天", "9 天"], a: 2, e: "每天净爬 1 米，第 7 天末在 7 米处；第 8 天白天爬 3 米直接出井，不会再滑下去。" },
+  { q: "时钟的时针和分针，一昼夜（24 小时）重合几次？", o: ["24 次", "12 次", "22 次", "23 次"], a: 2, e: "每 12 小时重合 11 次（11 点多的那次跨到 12 点），一昼夜共 22 次。" },
+  { q: "哥哥 4 岁时，弟弟的年龄是哥哥的一半；哥哥 100 岁时弟弟几岁？", o: ["50 岁", "98 岁", "96 岁", "52 岁"], a: 1, e: "哥哥 4 岁时弟弟 2 岁，差 2 岁；100-2=98 岁。" },
+  { q: "3 只猫 3 分钟抓 3 只老鼠，100 只猫抓 100 只老鼠要几分钟？", o: ["100 分钟", "33 分钟", "3 分钟", "1 分钟"], a: 2, e: "1 只猫抓 1 只老鼠要 3 分钟，100 只猫同时抓也是 3 分钟。" },
+  { q: "一根绳子对折 3 次后从中间剪断，变成几段？", o: ["8 段", "9 段", "7 段", "16 段"], a: 1, e: "对折 3 次是 8 层，剪一刀产生 8 个断口，8+1=9 段。" },
+  { q: "一个人住 10 楼：晴天他只坐到 7 楼再走上去，雨天却直接坐到 10 楼。为什么？", o: ["他喜欢淋雨", "电梯雨天更快", "他个子矮，雨天用伞尖才够得到 10 楼按钮", "7 楼是他朋友家"], a: 2, e: "他个子矮，晴天只够得到 7 楼按钮；雨天带伞，用伞尖按到 10 楼。" },
+  { q: "房间里点了 5 根蜡烛，吹灭 2 根，第二天早上还剩几根？", o: ["3 根", "5 根", "2 根", "0 根"], a: 2, e: "被吹灭的 2 根留了下来，另外 3 根烧完啦。" },
+  { q: "站在北极点上，随便朝哪个方向迈一步，都是朝哪走？", o: ["北", "南", "东", "西"], a: 1, e: "北极点是地球最北端，往任何方向走都是向南。" },
+  { q: "什么布剪不断？", o: ["瀑布", "绸缎", "铁丝布", "胶布"], a: 0, e: "瀑布怎么剪都剪不断～" },
+  { q: "小明的妈妈有三个孩子：大儿子叫大毛，二儿子叫二毛，三儿子叫什么？", o: ["三毛", "小毛", "小明", "毛毛"], a: 2, e: "题目开头就说了：是「小明的妈妈」呀。" },
+  { q: "一辆车左转时，哪个轮子不转？", o: ["左前轮", "右前轮", "备胎", "左后轮"], a: 2, e: "备胎放在后备箱里，永远不转。" },
+];
+function brainView(root) {
+  root.appendChild(backBar("🧠 脑力侦探", {
+    title: "脑力侦探", game: "brain", total: BRAIN_LEVELS.length,
+    onPick: (i) => { lv = i; renderLevel(); }
+  }));
+  const stage = el("div", "stage");
+  const box = el("div", "side-panel"); box.style.cssText = "max-width:560px;width:100%;margin:0 auto";
+  stage.appendChild(box);
+  root.appendChild(stage);
+  let lv = getLevel("brain", BRAIN_LEVELS.length) - 1;
+
+  function renderLevel() {
+    const L = BRAIN_LEVELS[lv];
+    box.innerHTML = "";
+    box.appendChild(el("h3", null, "🧠 第 " + (lv + 1) + " / " + BRAIN_LEVELS.length + " 关"));
+    const q = el("div", "row", L.q);
+    q.style.cssText = "font-size:17px;line-height:1.8;font-weight:bold;margin:14px 0";
+    box.appendChild(q);
+    const expEl = el("div", "hint");
+    L.o.forEach((opt, i) => {
+      const b = el("button", "btn", String.fromCharCode(65 + i) + ". " + opt);
+      b.style.cssText = "display:block;width:100%;margin:8px 0;text-align:left;padding:12px 16px";
+      b.onclick = () => {
+        if (i === L.a) {
+          SFX.win();
+          const last = lv + 1 >= BRAIN_LEVELS.length;
+          if (!last) saveLevel("brain", lv + 2);
+          showModal("🎉 回答正确！", ["💡 " + L.e],
+            last
+              ? [{ label: "🏆 全部通关！返回主菜单", primary: true, onClick: () => show(menuView) },
+                 { label: "回玩本关", onClick: () => { hideModal(); renderLevel(); } }]
+              : [{ label: "下一关 →", primary: true, onClick: () => { lv++; renderLevel(); } }]);
+        } else {
+          SFX.error();
+          b.style.borderColor = "var(--red)";
+          expEl.textContent = "再想想～（提示：跳出惯性思维）";
+        }
+      };
+      box.appendChild(b);
+    });
+    box.appendChild(expEl);
+  }
+  renderLevel();
+  return onEsc();
+}
+
+/* ================================================================
+   12. 海龟汤（情境推理：读汤面 → 提示 → 揭汤底）
+   ================================================================ */
+const SOUPS = [
+  { t: "一碗海龟汤", d: "★★★",
+    s: "男人走进餐厅点了一碗海龟汤，喝了一口，问服务员：「这真的是海龟汤吗？」得到肯定答复后，他回家就自杀了。",
+    h: ["他以前喝过「海龟汤」", "那次不是在餐厅里喝的", "和一场海难有关"],
+    b: "他曾遭遇海难漂流荒岛，同伴给他喝过一碗「海龟汤」活了下来。今天喝到真正的海龟汤，发现味道完全不同——当年喝的其实是遇难同伴的肉。真相让他崩溃。" },
+  { t: "葬礼上的心动", d: "★★",
+    s: "女孩在姐姐的葬礼上遇到一位一见钟情的男子。回家几天后，她杀了自己的妹妹。",
+    h: ["她杀人和那位男子有关", "她想再见到他", "场合也是葬礼"],
+    b: "她唯一见到那名男子的场合就是葬礼。她天真地以为：再办一场葬礼，就能再见他一面。" },
+  { t: "熄灭的灯塔", d: "★★",
+    s: "一个男人每晚都要开着一盏灯才能入睡。某天夜里灯坏了，第二天早上他自杀了。",
+    h: ["这盏灯不是普通的灯", "他的工作和海有关", "灯灭的那个晚上出了大事"],
+    b: "他是灯塔看守人。那晚灯塔熄灭，一艘船触礁沉没，全船遇难。他无法承受这份愧疚。" },
+  { t: "半根火柴", d: "★★★",
+    s: "沙漠中躺着一具男尸，手里紧紧攥着半根火柴，周围没有脚印。",
+    h: ["他是从天上掉下来的", "他是自愿跳下来的", "和抽签有关"],
+    b: "热气球漏气超重，乘客们抽签决定谁跳下去减重——用火柴棍抽签，抽到半根（最短）的人跳。他抽中了。" },
+  { t: "一杯水", d: "★",
+    s: "男人走进酒吧要一杯水。酒保突然掏出一把枪指着他。男人说了声「谢谢」，转身走了。",
+    h: ["男人身体不适", "酒保没有恶意", "枪起了「治疗」作用"],
+    b: "男人一直打嗝停不下来，想要杯水压一压。酒保看出来了，用枪吓他一跳——嗝真的被吓好了，所以他道谢离开。" },
+  { t: "雨夜的伞", d: "★★",
+    s: "女人深夜冒雨回家，看到家门口放着一把湿漉漉的伞，立刻报警了。",
+    h: ["伞是她自己家的", "伞平时放在家里", "湿说明它刚被带出去过"],
+    b: "那把伞本该放在家里，却是湿的——说明有人进过她家、还撑着这把伞出去过，而她是独居。有人潜入过她的家。" },
+  { t: "脚步声", d: "★",
+    s: "一位盲人回到家，听到楼上传来脚步声，立刻悄悄退出去报了警。",
+    h: ["他是独居", "他养了宠物但宠物就在脚边", "家里不该有第二个人"],
+    b: "他独居，宠物狗就在身边（他能感觉到）。楼上的脚步声只可能是闯入者。" },
+  { t: "无声电话", d: "★★",
+    s: "深夜，男人接到一个电话，对方一句话也没说就挂断了。男人却安心地笑了。",
+    h: ["他在等一个消息", "无声本身就是约定好的信号", "和他远方的家人有关"],
+    b: "家人在外遇到麻烦被限制说话，他们约定：接通后不说话响三声就代表「平安」。沉默，正是他等的报平安。" },
+  { t: "末班地铁的空位", d: "★★★",
+    s: "末班地铁上，女孩指着空无一人的座位说：「你坐吧。」旁边乘客脸色大变，下车就报了警。",
+    h: ["女孩不是在对活人说话", "她曾经每天都坐这趟末班车", "和她去世的人有关"],
+    b: "女孩每晚都「看见」去世的男友还在老位置陪她坐车。旁人意识到她看到的是不存在的人——或者说，她身边真的空无一人。" },
+  { t: "半张照片", d: "★★",
+    s: "男人整理旧物时翻到半张被撕掉的照片，只看了一眼就崩溃大哭。",
+    h: ["照片上是两个人", "被撕掉的那一半才是关键", "他一直以为那个人已经不在了"],
+    b: "照片是他和失踪多年女儿的合影，被撕掉的一半是女儿的笑脸。而刚才，他在街头刚和一个小女孩擦肩而过——手腕上挂着一模一样的手链。他认出了，却来不及追。" },
+];
+function soupView(root) {
+  root.appendChild(backBar("🍲 海龟汤"));
+  const stage = el("div", "stage");
+  root.appendChild(stage);
+  let done; try { done = JSON.parse(localStorage.getItem("pt_soups")) || []; } catch (e) { done = []; }
+
+  function renderList() {
+    stage.innerHTML = "";
+    const box = el("div"); box.style.cssText = "width:100%;text-align:center";
+    box.appendChild(el("div", "game-title", "🍲 选一碗汤开始推理"));
+    box.appendChild(el("div", "hint", "规则：读「汤面」→ 依次看 3 条提示 → 心里猜出真相后揭「汤底」· 难度 ★ 越多越烧脑"));
+    const grid = el("div", "game-grid"); grid.style.marginTop = "16px";
+    SOUPS.forEach((sp, i) => {
+      const c = el("div", "card");
+      if (done.includes(i)) c.appendChild(el("div", "lv-tag", "已喝"));
+      c.appendChild(el("div", "icon", "🍵"));
+      c.appendChild(el("div", "name", sp.t));
+      c.appendChild(el("div", "desc", "难度 " + sp.d));
+      c.onclick = () => { SFX.click(); renderSoup(i); };
+      grid.appendChild(c);
+    });
+    box.appendChild(grid);
+    stage.appendChild(box);
+  }
+
+  function renderSoup(i) {
+    const sp = SOUPS[i];
+    stage.innerHTML = "";
+    const box = el("div", "side-panel"); box.style.cssText = "max-width:600px;width:100%;margin:0 auto";
+    box.appendChild(el("h3", null, "🍵 " + sp.t + "　" + sp.d));
+    const sEl = el("div", "row", "【汤面】" + sp.s);
+    sEl.style.cssText = "font-size:16px;line-height:1.9;margin:12px 0;text-align:left";
+    box.appendChild(sEl);
+    let hintIdx = 0;
+    const hintArea = el("div"); hintArea.style.cssText = "text-align:left;min-height:30px";
+    box.appendChild(hintArea);
+    const hintBtn = el("button", "btn mint", "💡 看提示（剩 3 条）"); hintBtn.style.cssText = "width:100%;margin:8px 0";
+    hintBtn.onclick = () => {
+      if (hintIdx >= sp.h.length) return;
+      SFX.reveal();
+      const d = el("div", "row", "💡 提示 " + (hintIdx + 1) + "：" + sp.h[hintIdx]);
+      d.style.cssText = "font-size:14px;margin:6px 0;text-align:left";
+      hintArea.appendChild(d);
+      hintIdx++;
+      hintBtn.textContent = hintIdx >= sp.h.length ? "提示看完啦" : "💡 看提示（剩 " + (sp.h.length - hintIdx) + " 条）";
+    };
+    box.appendChild(hintBtn);
+    const revealBtn = el("button", "btn primary", "🍲 揭晓汤底"); revealBtn.style.cssText = "width:100%;margin:8px 0";
+    revealBtn.onclick = () => {
+      SFX.win();
+      const bEl = el("div", "row", "【汤底】" + sp.b);
+      bEl.style.cssText = "font-size:15px;line-height:1.9;margin:10px 0;text-align:left;background:rgba(138,218,178,.15);border-radius:12px;padding:12px";
+      box.appendChild(bEl);
+      revealBtn.style.display = "none"; hintBtn.style.display = "none";
+      if (!done.includes(i)) { done.push(i); localStorage.setItem("pt_soups", JSON.stringify(done)); }
+      const row = el("div"); row.style.cssText = "display:flex;gap:10px;margin-top:6px";
+      const back = el("button", "btn", "← 回汤馆"); back.style.flex = "1"; back.onclick = renderList;
+      const next = el("button", "btn mint", "🎲 随机下一碗"); next.style.flex = "1";
+      next.onclick = () => { let n; do { n = rndi(0, SOUPS.length - 1); } while (SOUPS.length > 1 && n === i); renderSoup(n); };
+      row.appendChild(back); row.appendChild(next);
+      box.appendChild(row);
+    };
+    box.appendChild(revealBtn);
+    const back2 = el("button", "btn", "← 回汤馆"); back2.style.cssText = "width:100%";
+    back2.onclick = renderList;
+    box.appendChild(back2);
+    stage.appendChild(box);
+  }
+  renderList();
+  return onEsc();
+}
+
+/* ================================================================
    10. 寻机头（玩家 vs AI）
    ================================================================ */
 const PLANE_BASE = [[0,0],[1,-2],[1,-1],[1,0],[1,1],[1,2],[2,0],[3,-1],[3,0],[3,1]];
@@ -2868,6 +3076,64 @@ function planesView(root) {
   let myShots = new Set(), aiShots = new Set();
   let placeDir = 0, hoverCell = null;
   let turn = "player", busyAI = false;
+  let net = null;   // 联机：{ room, chat, sentReady, oppPlanes, myTurn }
+
+  function renderNetLobby() {
+    stage.innerHTML = "";
+    hintEl.textContent = "创建或加入房间，两人到齐后房主点开始";
+    const wrap = buildLobby("寻机头对战",
+      (rm) => {   // 房主点开始
+        if (rm.members.length !== 2) { SFX.error(); return; }
+        rm.send("begin", {});
+        beginNet(rm);
+      },
+      (rm) => { rm.on("begin", () => beginNet(rm)); }   // 其他人收到开始
+    );
+    stage.appendChild(wrap);
+  }
+  function beginNet(rm) {
+    net = { room: rm, sentReady: false, oppPlanes: null, myTurn: false };
+    rm.on("ready", p => {
+      net.oppPlanes = p.planes;
+      if (net.sentReady && phase !== "battle") startNetBattle();
+    });
+    rm.on("fire", p => {
+      aiShots.add(p.r + "," + p.c);
+      resolveShot(myPlanes, p.r, p.c);
+      drawBattle();
+      if (checkAllDead(myPlanes)) {
+        SFX.lose();
+        showModal("😢 惜败", ["对方先找到了你的全部机头！"],
+          [{ label: "再来一局", primary: true, onClick: () => { net.room.send("again", {}); netAgain(); } },
+           { label: "离开房间", onClick: () => { net.room.leave(); net = null; show(menuView); } }]);
+        return;
+      }
+      net.myTurn = true;
+      statusEl.textContent = "🔥 轮到你了：点击右侧敌阵翻格";
+    });
+    rm.on("again", () => netAgain());
+    phase = "place"; myPlanes = [];
+    renderPlace();
+    hintEl.textContent = "联机对战：摆好你的 " + PLANE_COUNT + " 架飞机后点完成，双方都就绪即开战";
+  }
+  function netAgain() {
+    net.sentReady = false; net.oppPlanes = null; net.myTurn = false;
+    myPlanes = []; phase = "place";
+    renderPlace();
+    hintEl.textContent = "新的一局：重新摆放你的飞机";
+  }
+  function netReady() {
+    net.sentReady = true;
+    net.room.send("ready", { planes: myPlanes });
+    SFX.win();
+    hintEl.textContent = "✅ 你已就绪，等对方摆完飞机…";
+    if (net.oppPlanes && phase !== "battle") startNetBattle();
+  }
+  function startNetBattle() {
+    aiPlanes = net.oppPlanes;
+    net.myTurn = net.room.isHost;   // 房主先开炮
+    startBattle();
+  }
 
   function renderChoose() {
     stage.innerHTML = "";
@@ -2881,6 +3147,15 @@ function planesView(root) {
     b2.onclick = () => { SFX.click(); myPlanes = randomPlanes(); startBattle(); };
     row.appendChild(b1); row.appendChild(b2);
     box.appendChild(row);
+    const netRow = el("div"); netRow.style.cssText = "margin-top:18px";
+    const b3 = el("button", "btn big", "👥 和好友联机对战");
+    b3.onclick = () => {
+      SFX.click();
+      if (!currentUser) { showModal("需要先登录", ["联机对战要有账号才能开房间哦", "点右上角「登录」注册/登录后再来～"], [{ label: "好的", primary: true }]); return; }
+      renderNetLobby();
+    };
+    netRow.appendChild(b3);
+    box.appendChild(netRow);
     stage.appendChild(box);
   }
 
@@ -2904,7 +3179,8 @@ function planesView(root) {
     const doneB = el("button", "btn primary", "完成放置，开战！");
     doneB.onclick = () => {
       if (myPlanes.length < PLANE_COUNT) { SFX.error(); return; }
-      SFX.click(); startBattle();
+      SFX.click();
+      if (net) netReady(); else startBattle();
     };
     btnRow.appendChild(resetB); btnRow.appendChild(doneB);
     box.appendChild(btnRow);
@@ -2961,11 +3237,11 @@ function planesView(root) {
 
   let myCv, aiCv, statusEl, shotsEl;
   function startBattle() {
-    aiPlanes = randomPlanes();
+    if (!net) aiPlanes = randomPlanes();
     myShots = new Set(); aiShots = new Set();
     turn = "player"; busyAI = false; phase = "battle";
     stage.innerHTML = "";
-    statusEl = el("div", "game-title", "你的回合：点击右侧敌阵翻格");
+    statusEl = el("div", "game-title", net ? (net.myTurn ? "🔥 你先手：点击右侧敌阵翻格" : "对方先手，等对方开炮…") : "你的回合：点击右侧敌阵翻格");
     stage.appendChild(statusEl);
     const boards = el("div", "stage");
     const left = el("div"); left.style.textAlign = "center";
@@ -2981,7 +3257,9 @@ function planesView(root) {
     hintEl.textContent = "灰=未中 蓝=机身 红=机头 · ESC 返回主菜单";
 
     aiCv.addEventListener("mousedown", (e) => {
-      if (phase !== "battle" || turn !== "player" || busyAI) return;
+      if (phase !== "battle") return;
+      if (net) { if (!net.myTurn) return; }
+      else if (turn !== "player" || busyAI) return;
       const [px, py] = evXY(e, aiCv);
       const r = Math.floor(py / CELL), c = Math.floor(px / CELL);
       if (r < 0 || c < 0 || r >= PLANE_BOARD || c >= PLANE_BOARD) return;
@@ -2992,14 +3270,26 @@ function planesView(root) {
       drawBattle();
       if (checkAllDead(aiPlanes)) {
         SFX.win();
-        showModal("🏆 胜利！", [`你找到了全部 ${PLANE_COUNT} 个机头！`, `共用 ${myShots.size} 次翻格`],
-          [{ label: "再来一局", primary: true, onClick: () => { phase = "choose"; renderChoose(); } },
-           { label: "返回主菜单", onClick: () => show(menuView) }]);
+        if (net) {
+          showModal("🏆 胜利！", ["你先击落了对方全部 " + PLANE_COUNT + " 个机头！", `共用 ${myShots.size} 次翻格`],
+            [{ label: "再来一局", primary: true, onClick: () => { net.room.send("again", {}); netAgain(); } },
+             { label: "离开房间", onClick: () => { net.room.leave(); net = null; show(menuView); } }]);
+        } else {
+          showModal("🏆 胜利！", [`你找到了全部 ${PLANE_COUNT} 个机头！`, `共用 ${myShots.size} 次翻格`],
+            [{ label: "再来一局", primary: true, onClick: () => { phase = "choose"; renderChoose(); } },
+             { label: "返回主菜单", onClick: () => show(menuView) }]);
+        }
         return;
       }
-      turn = "ai"; busyAI = true;
-      statusEl.textContent = "AI 思考中…";
-      setTimeout(aiAttack, 650);
+      if (net) {
+        net.myTurn = false;
+        net.room.send("fire", { r, c });
+        statusEl.textContent = "💥 已开炮！等对方回合…";
+      } else {
+        turn = "ai"; busyAI = true;
+        statusEl.textContent = "AI 思考中…";
+        setTimeout(aiAttack, 650);
+      }
     });
     drawBattle();
   }
