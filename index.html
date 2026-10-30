@@ -1652,6 +1652,7 @@ function guessView(root) {
   }
   function onRound(p) {
     over = false; drawerUid = p.drawer; curWord = p.word;
+    strokeList = []; redoStrokes = [];
     ctx.clearRect(0, 0, 400, 400);
     const meDrawer = room.me() === drawerUid;
     tools.style.display = meDrawer ? "block" : "none";
@@ -1676,6 +1677,22 @@ function guessView(root) {
   }
   // 画笔画布事件（仅作画者生效）
   let drawing = false, lastP = null;
+  let strokeList = [], redoStrokes = [];
+  function redrawStrokes() {
+    ctx.clearRect(0, 0, 400, 400);
+    strokeList.forEach(s => drawSeg(s.x1, s.y1, s.x2, s.y2, s.c, s.w));
+  }
+  function doUndo() {   // 作画者本地撤销
+    const s = strokeList.pop();
+    if (!s) { SFX.error(); return; }
+    redoStrokes.push(s); redrawStrokes(); SFX.click();
+  }
+  function doRedo() {   // 作画者本地重做
+    const s = redoStrokes.pop();
+    if (!s) { SFX.error(); return; }
+    strokeList.push(s); drawSeg(s.x1, s.y1, s.x2, s.y2, s.c, s.w); SFX.click();
+    return s;
+  }
   function posOf(e) {
     const r = cv.getBoundingClientRect();
     return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
@@ -1688,15 +1705,22 @@ function guessView(root) {
   cv.addEventListener("pointermove", e => {
     if (!drawing) return;
     const p = posOf(e);
-    drawSeg(lastP[0], lastP[1], p[0], p[1], brushColor, brushW);
-    room.send("stroke", { x1: lastP[0], y1: lastP[1], x2: p[0], y2: p[1], c: brushColor, w: brushW });
+    const s = { x1: lastP[0], y1: lastP[1], x2: p[0], y2: p[1], c: brushColor, w: brushW };
+    drawSeg(s.x1, s.y1, s.x2, s.y2, s.c, s.w);
+    strokeList.push(s); redoStrokes = [];
+    room.send("stroke", s);
     lastP = p;
   });
   const stopDraw = () => { drawing = false; };
   cv.addEventListener("pointerup", stopDraw);
   cv.addEventListener("pointercancel", stopDraw);
+  const undoDrawBtn = el("button", "btn", "↩"); undoDrawBtn.title = "撤销一笔"; undoDrawBtn.style.cssText = "padding:4px 10px;font-size:13px;margin:2px";
+  const redoDrawBtn = el("button", "btn", "↪"); redoDrawBtn.title = "重做一笔"; redoDrawBtn.style.cssText = "padding:4px 10px;font-size:13px;margin:2px";
+  undoDrawBtn.onclick = () => { if (room && room.me() === drawerUid) { doUndo(); room.send("undo", {}); } };
+  redoDrawBtn.onclick = () => { if (room && room.me() === drawerUid) { const s = doRedo(); if (s) room.send("redo", s); } };
+  tools.appendChild(undoDrawBtn); tools.appendChild(redoDrawBtn);
   clearBtn.onclick = () => {
-    if (room && room.me() === drawerUid) { ctx.clearRect(0, 0, 400, 400); room.send("clear", {}); }
+    if (room && room.me() === drawerUid) { strokeList = []; redoStrokes = []; ctx.clearRect(0, 0, 400, 400); room.send("clear", {}); }
   };
 
   function bindRoom(rm, cht) {
@@ -1705,8 +1729,10 @@ function guessView(root) {
     rm.on("round", onRound);
     rm.on("guess", onGuess);
     rm.on("win", onWin);
-    rm.on("stroke", p => drawSeg(p.x1, p.y1, p.x2, p.y2, p.c, p.w));
-    rm.on("clear", () => ctx.clearRect(0, 0, 400, 400));
+    rm.on("stroke", p => { strokeList.push(p); drawSeg(p.x1, p.y1, p.x2, p.y2, p.c, p.w); });
+    rm.on("clear", () => { strokeList = []; ctx.clearRect(0, 0, 400, 400); });
+    rm.on("undo", () => { if (strokeList.pop()) redrawStrokes(); });
+    rm.on("redo", p => { strokeList.push(p); drawSeg(p.x1, p.y1, p.x2, p.y2, p.c, p.w); });
   }
 
   // 入口选择：单人 / 联机大厅
@@ -2122,6 +2148,11 @@ function huarongView(root) {
   side.appendChild(el("h3", null, "移动选中棋子"));
   const dpad = el("div", "dpad");
   side.appendChild(dpad);
+  const urRow = el("div"); urRow.style.cssText = "display:flex;gap:8px;margin-top:8px";
+  const undoBtn = el("button", "btn", "↩ 撤销"); undoBtn.style.flex = "1"; undoBtn.onclick = undo;
+  const redoBtn = el("button", "btn", "↪ 重做"); redoBtn.style.flex = "1"; redoBtn.onclick = redo;
+  urRow.appendChild(undoBtn); urRow.appendChild(redoBtn);
+  side.appendChild(urRow);
   const resetBtn = el("button", "btn primary", "重开本关"); resetBtn.style.width = "100%";
   side.appendChild(resetBtn);
   const tip = el("div", "row"); tip.style.cssText = "color:var(--text-dim);font-size:13px;line-height:1.7;margin-top:10px";
@@ -2138,6 +2169,20 @@ function huarongView(root) {
     { size: 7, name: "7×7 大师" },
   ];
   let digGrid = [], digN = 4, digLv = 0, digMoves = 0;
+  // 撤销 / 重做（两种模式共用）
+  let hist = [], redoStk = [];
+  function undo() {
+    if (!hist.length) { SFX.error(); return; }
+    if (mode === "sanguo") { redoStk.push({ pos: pieces.map(p => [p.r, p.c]), moves, selN: sel ? sel.n : null }); const s = hist.pop(); pieces.forEach((p, i) => { p.r = s.pos[i][0]; p.c = s.pos[i][1]; }); moves = s.moves; sel = pieces.find(p => p.n === s.selN) || null; updSide(); drawSanguo(); }
+    else { redoStk.push({ g: digGrid.slice(), m: digMoves }); const s = hist.pop(); digGrid = s.g.slice(); digMoves = s.m; drawDigit(); updSide(); }
+    SFX.click();
+  }
+  function redo() {
+    if (!redoStk.length) { SFX.error(); return; }
+    if (mode === "sanguo") { hist.push({ pos: pieces.map(p => [p.r, p.c]), moves, selN: sel ? sel.n : null }); const s = redoStk.pop(); pieces.forEach((p, i) => { p.r = s.pos[i][0]; p.c = s.pos[i][1]; }); moves = s.moves; sel = pieces.find(p => p.n === s.selN) || null; updSide(); drawSanguo(); }
+    else { hist.push({ g: digGrid.slice(), m: digMoves }); const s = redoStk.pop(); digGrid = s.g.slice(); digMoves = s.m; drawDigit(); updSide(); }
+    SFX.click();
+  }
   function shuffleDigit() {
     const n = digN;
     digGrid = Array.from({ length: n * n }, (_, i) => (i + 1) % (n * n));
@@ -2154,7 +2199,7 @@ function huarongView(root) {
       digGrid[blank] = digGrid[t]; digGrid[t] = 0; blank = t;
     }
     if (digitWin()) { digGrid[n * n - 2] = 0; digGrid[n * n - 1] = n * n - 1; }
-    digMoves = 0;
+    digMoves = 0; hist = []; redoStk = [];
   }
   function digitWin() {
     const n = digN, total = n * n;
@@ -2167,6 +2212,7 @@ function huarongView(root) {
     const br = Math.floor(blank / n), bc = blank % n;
     const ir = Math.floor(idx / n), ic = idx % n;
     if ((Math.abs(br - ir) === 1 && bc === ic) || (Math.abs(bc - ic) === 1 && br === ir)) {
+      hist.push({ g: digGrid.slice(), m: digMoves }); redoStk = [];
       digGrid[blank] = digGrid[idx]; digGrid[idx] = 0;
       digMoves++; SFX.place(); drawDigit();
       if (digitWin()) {
@@ -2221,7 +2267,7 @@ function huarongView(root) {
   function startLevel(i) {
     lv = i;
     pieces = HRD_LEVELS[i].pieces.map(p => ({ ...p }));
-    sel = null; moves = 0;
+    sel = null; moves = 0; hist = []; redoStk = [];
     updSide(); drawSanguo();
   }
   function updSide() {
@@ -2249,6 +2295,7 @@ function huarongView(root) {
     if (nr < 0 || nc < 0 || nr + sel.h > ROWS || nc + sel.w > COLS) { SFX.error(); return; }
     for (let r = nr; r < nr + sel.h; r++) for (let c = nc; c < nc + sel.w; c++)
       if (occ[r + "," + c]) { SFX.error(); return; }
+    hist.push({ pos: pieces.map(p => [p.r, p.c]), moves, selN: sel.n }); redoStk = [];
     sel.r = nr; sel.c = nc; moves++;
     SFX.place(); updSide(); drawSanguo();
     if (sel.n === "曹操" && sel.r === 3 && sel.c === 1) {
@@ -2325,6 +2372,8 @@ function huarongView(root) {
   const keyH = (e) => {
     const m = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
     if (m) { e.preventDefault(); tryMove(m[0], m[1]); }
+    if (e.ctrlKey && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undo(); }
+    if (e.ctrlKey && (e.key === "y" || e.key === "Y")) { e.preventDefault(); redo(); }
     if (e.key === "Escape") show(menuView);
   };
   window.addEventListener("keydown", keyH);
@@ -2516,7 +2565,11 @@ function sudokuView(root) {
   const againBtn = el("button", "btn", "重开本关"); againBtn.style.cssText = "width:100%;margin-top:8px";
   const autoBtn = el("button", "btn", "自动填充：关"); autoBtn.style.cssText = "width:100%;margin-top:8px";
   autoBtn.onclick = () => { autoFill = !autoFill; autoBtn.textContent = "自动填充：" + (autoFill ? "开" : "关"); autoBtn.className = autoFill ? "btn mint" : "btn"; SFX.click(); if (autoFill) autoFillBoard(); };
-  side.appendChild(checkBtn); side.appendChild(autoBtn); side.appendChild(againBtn);
+  const urRow = el("div"); urRow.style.cssText = "display:flex;gap:8px;margin-top:8px";
+  const undoBtn = el("button", "btn", "↩ 撤销"); undoBtn.style.flex = "1"; undoBtn.onclick = undo;
+  const redoBtn = el("button", "btn", "↪ 重做"); redoBtn.style.flex = "1"; redoBtn.onclick = redo;
+  urRow.appendChild(undoBtn); urRow.appendChild(redoBtn);
+  side.appendChild(checkBtn); side.appendChild(urRow); side.appendChild(autoBtn); side.appendChild(againBtn);
   stage.appendChild(side);
   root.appendChild(stage);
   root.appendChild(el("div", "hint", "点击格子后填入数字（键盘 1-9 也可，0/Delete 清除）· 红字为冲突 · ESC 返回"));
@@ -2524,10 +2577,11 @@ function sudokuView(root) {
   const ctx = cv.getContext("2d");
   const CELL = 60;
   let grid, fixed, sel = null, lv = getLevel("sudoku", SUDOKU_LEVELS) - 1, autoFill = false;
+  let hist = [], redoStk = [];   // 撤销/重做：每条是一组 {r,c,old,v}
   const holesFor = i => 32 + i;
 
   function autoFillBoard() {
-    let changed = true, filled = false;
+    let changed = true; const batch = [];
     while (changed) {
       changed = false;
       for (let r = 0; r < 9; r++) {
@@ -2535,7 +2589,7 @@ function sudokuView(root) {
         for (let c = 0; c < 9; c++) { const v = grid[r][c]; if (!v) empties.push(c); else { if (seen.has(v)) dup = true; seen.add(v); } }
         if (empties.length === 1 && !dup) {
           const miss = [1,2,3,4,5,6,7,8,9].find(n => !seen.has(n));
-          if (miss !== undefined) { grid[r][empties[0]] = miss; changed = true; filled = true; }
+          if (miss !== undefined) { batch.push({ r, c: empties[0], old: 0, v: miss }); grid[r][empties[0]] = miss; changed = true; }
         }
       }
       for (let c = 0; c < 9; c++) {
@@ -2543,18 +2597,32 @@ function sudokuView(root) {
         for (let r = 0; r < 9; r++) { const v = grid[r][c]; if (!v) empties.push(r); else { if (seen.has(v)) dup = true; seen.add(v); } }
         if (empties.length === 1 && !dup) {
           const miss = [1,2,3,4,5,6,7,8,9].find(n => !seen.has(n));
-          if (miss !== undefined) { grid[empties[0]][c] = miss; changed = true; filled = true; }
+          if (miss !== undefined) { batch.push({ r: empties[0], c, old: 0, v: miss }); grid[empties[0]][c] = miss; changed = true; }
         }
       }
     }
-    if (filled) { SFX.reveal(); draw(); }
+    if (batch.length) { hist.push(batch); redoStk = []; SFX.reveal(); draw(); }
+  }
+  function undo() {
+    const b = hist.pop();
+    if (!b) { SFX.error(); return; }
+    redoStk.push(b);
+    b.forEach(({ r, c, old }) => { grid[r][c] = old; });
+    SFX.click(); draw();
+  }
+  function redo() {
+    const b = redoStk.pop();
+    if (!b) { SFX.error(); return; }
+    hist.push(b);
+    b.forEach(({ r, c, v }) => { grid[r][c] = v; });
+    SFX.click(); draw();
   }
 
   function reset() {
     const puzzle = genSudoku(holesFor(lv));
     grid = puzzle.map(r => r.slice());
     fixed = puzzle.map(r => r.map(v => v !== 0));
-    sel = null;
+    sel = null; hist = []; redoStk = [];
     lvEl.textContent = `第 ${lv + 1} / ${SUDOKU_LEVELS} 关（空 ${holesFor(lv)} 格）`;
     draw();
   }
@@ -2595,6 +2663,8 @@ function sudokuView(root) {
     if (!sel) return;
     const [r, c] = sel;
     if (fixed[r][c]) { SFX.error(); return; }
+    if (grid[r][c] === v) return;
+    hist.push([{ r, c, old: grid[r][c], v }]); redoStk = [];
     grid[r][c] = v; SFX.place(); draw();
     if (autoFill) setTimeout(autoFillBoard, 60);
   }
@@ -2615,6 +2685,8 @@ function sudokuView(root) {
   const keyH = (e) => {
     if (/^[1-9]$/.test(e.key)) input(Number(e.key));
     if (e.key === "0" || e.key === "Delete" || e.key === "Backspace") input(0);
+    if (e.ctrlKey && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undo(); }
+    if (e.ctrlKey && (e.key === "y" || e.key === "Y")) { e.preventDefault(); redo(); }
     if (e.key === "Escape") show(menuView);
   };
   window.addEventListener("keydown", keyH);
