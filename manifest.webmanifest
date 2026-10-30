@@ -1,0 +1,15 @@
+{
+  "name": "PLAYING TIME · 游戏时光",
+  "short_name": "PLAYING TIME",
+  "description": "可爱小游戏合集：转盘、跑酷、五子棋、华容道、你画我猜、谁是卧底…",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fdf8ec",
+  "theme_color": "#f5b81e",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
