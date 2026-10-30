@@ -1486,6 +1486,32 @@ const GUESS_WORDS = (() => {
   ];
 })();
 
+// 联机真人作画的扩展词库（单人 AI 作画用上面带绘画指令的词）
+const GUESS_EXTRA = [
+  // 动物
+  "长颈鹿", "大象", "熊猫", "孔雀", "螃蟹", "章鱼", "蜗牛", "蝙蝠", "松鼠", "刺猬",
+  "袋鼠", "骆驼", "恐龙", "鲨鱼", "海马", "乌龟", "鹦鹉", "猫头鹰", "啄木鸟", "变色龙",
+  "蜻蜓", "萤火虫", "蜈蚣", "螃蟹", "河马", "鳄鱼", "长颈鹿", "考拉", "浣熊", "刺猬",
+  // 食物
+  "火锅", "北京烤鸭", "月饼", "粽子", "珍珠奶茶", "披萨", "寿司", "棒棒糖", "糖葫芦", "煎蛋",
+  "薯条", "爆米花", "棉花糖", "烤串", "方便面", "小笼包", "冰淇淋", "甜甜圈", "三明治", "烤红薯",
+  // 物品
+  "台灯", "电风扇", "洗衣机", "沙发", "牙刷", "剪刀", "钥匙", "灯笼", "气球", "风筝",
+  "跷跷板", "滑梯", "秋千", "购物车", "行李箱", "望远镜", "放大镜", "温度计", "闹钟", "电饭煲",
+  // 运动与活动
+  "跳绳", "举重", "射箭", "滑雪", "冲浪", "滑板", "瑜伽", "拔河", "踢毽子", "放风筝",
+  "钓鱼", "烧烤", "自拍", "洗澡", "打呼噜", "做梦", "求婚", "过生日", "堆雪人", "打伞",
+  // 人物与角色
+  "消防员", "厨师", "宇航员", "魔术师", "小丑", "超人", "蜘蛛侠", "公主", "国王", "海盗",
+  "木乃伊", "僵尸", "机器人", "圣诞老人", "孙悟空", "猪八戒", "白雪公主", "美人鱼", "巫婆", "忍者",
+  // 自然与天气
+  "彩虹", "闪电", "龙卷风", "火山", "冰山", "瀑布", "沙漠", "雪人", "日出", "流星雨",
+  // 交通与建筑
+  "直升机", "轮船", "潜水艇", "热气球", "摩托车", "挖掘机", "城堡", "金字塔", "长城", "摩天轮",
+  "过山车", "灯塔", "吊桥", "旋转木马", "埃菲尔铁塔",
+];
+const GUESS_ALL = GUESS_WORDS.map(x => x.w).concat(GUESS_EXTRA.filter((w, i, a) => a.indexOf(w) === i));
+
 function guessView(root) {
   root.appendChild(backBar("🎨 你画我猜"));
   const stage = el("div", "stage");
@@ -1562,8 +1588,8 @@ function guessView(root) {
 
   /* ---------- 联机模式：真人轮流作画 ---------- */
   function pickWord() {
-    if (usedIdx.size >= GUESS_WORDS.length) usedIdx = new Set();
-    let i; do { i = rndi(0, GUESS_WORDS.length - 1); } while (usedIdx.has(i));
+    if (usedIdx.size >= GUESS_ALL.length) usedIdx = new Set();
+    let i; do { i = rndi(0, GUESS_ALL.length - 1); } while (usedIdx.has(i));
     usedIdx.add(i); return i;
   }
   function hostStartRound() {
@@ -1571,7 +1597,7 @@ function guessView(root) {
     if (!members.length) return;
     const idx = members.findIndex(m => m.uid === drawerUid);
     const next = members[(idx + 1) % members.length];
-    const p = { drawer: next.uid, drawerName: next.name, word: GUESS_WORDS[pickWord()].w };
+    const p = { drawer: next.uid, drawerName: next.name, word: GUESS_ALL[pickWord()] };
     room.send("round", p); onRound(p);
   }
   function onRound(p) {
